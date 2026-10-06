@@ -1,0 +1,13 @@
+{
+  "subject": "Notion",
+  "subjectType": "brand",
+  "category": "note-taking and team wiki apps",
+  "domains": ["notion.so", "notion.com"],
+  "competitors": ["Obsidian", "Confluence", "Coda"],
+  "facts": [
+    "Notion was founded in 2013 in San Francisco",
+    "Notion offers a free plan for individuals"
+  ],
+  "languages": ["en", "ru"],
+  "customQueries": ["Чем заменить Confluence для небольшой команды?"]
+}
