@@ -37,6 +37,8 @@ export interface EngineAnswer {
   citations: string[];
   latencyMs: number;
   error?: string;
+  /** Токены по данным провайдера — для оценки себестоимости. */
+  usage?: { inputTokens: number; outputTokens: number };
 }
 
 export interface Engine {

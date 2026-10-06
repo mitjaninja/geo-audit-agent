@@ -192,8 +192,8 @@ interface AuditReport {
 | Движок | Endpoint | Поиск | Где цитаты |
 | --- | --- | --- | --- |
 | chatgpt | `api.openai.com/v1/chat/completions`; при `OPENAI_WEB_SEARCH=1` — `/v1/responses` с tool `web_search` | опционально | `output[].content[].annotations[].url` |
-| claude | `api.anthropic.com/v1/messages`, `anthropic-version: 2023-06-01`; при `ANTHROPIC_WEB_SEARCH=1` — tool `web_search_20250305` | опционально | `content[].citations[].url` |
-| perplexity | `api.perplexity.ai/chat/completions`, модель `sonar` | всегда | `citations[]` и `search_results[].url` |
+| claude | `api.anthropic.com/v1/messages`, `anthropic-version: 2023-06-01`; при `ANTHROPIC_WEB_SEARCH=1` — tool `web_search_20260209` (запасной `web_search_20250305` для старых моделей) | опционально | `content[].citations[].url` |
+| perplexity | `api.perplexity.ai/chat/completions`, модель `sonar` (официально заменён на `/v1/agent` с 27.09.2026, синхронные вызовы пока работают) | всегда | `citations[]` и `search_results[].url` |
 | gemini | `generativelanguage.googleapis.com/v1beta/models/{model}:generateContent`, tool `google_search` | всегда | `groundingMetadata.groundingChunks[].web` (uri — редирект, домен брать из `title`) |
 
 - `mockEngines(subject, competitors)` — детерминированные фейки (хеш FNV от имени движка и вопроса): нумерованный список конкурентов, объект вставляется по смещению; часть ответов с «risks»; у поисковых — фиктивные цитаты.
