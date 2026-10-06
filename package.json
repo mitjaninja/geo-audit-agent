@@ -1,0 +1,26 @@
+{
+  "name": "geo-audit-agent",
+  "version": "0.1.0",
+  "description": "GEO Audit Agent — seller of GEO audits on Virtuals ACP",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "audit": "tsx src/cli.ts",
+    "serve": "tsx src/serve.ts",
+    "register": "bash offering/register-offerings.sh",
+    "typecheck": "tsc --noEmit",
+    "test": "MOCK_ENGINES=1 STATE_FILE=./data/test/jobs.json REPORTS_DIR=./data/test/reports node --import tsx --test test/*.test.ts"
+  },
+  "dependencies": {
+    "ajv": "^8.17.1",
+    "dotenv": "^16.4.5"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}
