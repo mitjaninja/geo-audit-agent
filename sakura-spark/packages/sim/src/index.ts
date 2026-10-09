@@ -1,4 +1,4 @@
-export { CASUAL_SKILL, casualBot, evaluate, greedyBot, makeBot, randomBot } from './bots.ts';
+export { BOT_NAMES, CASUAL_SKILL, casualBot, evaluate, greedyBot, makeBot, randomBot } from './bots.ts';
 export { formatLevel, searchMoves, starThresholds, tuneLevel } from './tune.ts';
 export type { TuneOptions, TuneResult } from './tune.ts';
 export type { Bot, BotName } from './bots.ts';

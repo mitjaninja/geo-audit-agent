@@ -70,11 +70,11 @@ test('every level in levels/ is valid, named by id, and playable', () => {
     assert.equal(file, `${String(level.id).padStart(4, '0')}.json`);
     assert.ok(!ids.has(level.id));
     ids.add(level.id);
-    // проходимость: простой жадный выбор хода (больше снятых фишек) иногда выигрывает.
-    // Точная сложность — дело автотеста (packages/sim), здесь только «уровень не сломан»
+    // проходимость: простой жадный выбор хода (больше снятых фишек, цели не учитывает) с двойным
+    // запасом ходов иногда выигрывает. Это ловит сломанный уровень; точная сложность — дело автотеста
     let wins = 0;
     for (let seed = 0; seed < 12 && wins === 0; seed++) {
-      const game = new Match3Game(gameOptionsFromLevel(level, seed));
+      const game = new Match3Game({ ...gameOptionsFromLevel(level, seed), moves: level.moves * 2 });
       const rng = new Rng(seed);
       while (game.status === 'playing') {
         let best = game.validSwaps()[0]!;

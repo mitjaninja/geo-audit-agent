@@ -3,7 +3,8 @@ import type { Match3Game, Swap } from '@sakura/core';
 
 /** Бот выбирает ход для текущей партии. Партия гарантированно в статусе playing. */
 export type Bot = (game: Match3Game) => Swap;
-export type BotName = 'random' | 'greedy' | 'casual';
+export const BOT_NAMES = ['random', 'greedy', 'casual'] as const;
+export type BotName = (typeof BOT_NAMES)[number];
 
 export function randomBot(seed: number): Bot {
   const rng = new Rng(seed);

@@ -3,11 +3,12 @@ import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { parseLevel } from '@sakura/core';
 import { autotestLevel, formatReports } from './autotest.ts';
+import { BOT_NAMES } from './bots.ts';
 import type { BotName } from './bots.ts';
 
 const HELP = `Автотест уровней: прогоняет бота по сидам и сравнивает win rate с целями PRD.
 
-npm run autotest -- [файлы.json…] [--runs 1000] [--bot greedy|random] [--seed 0] [--assist 0.04] [--json out.json] [--strict]
+npm run autotest -- [файлы.json…] [--runs 1000] [--bot greedy|random|casual] [--seed 0] [--assist 0.04] [--json out.json] [--strict]
 
 Без файлов берёт все уровни из levels/. --strict: код выхода 1, если уровень вне целевого коридора.`;
 
@@ -28,7 +29,7 @@ if (values.help) {
   console.log(HELP);
   process.exit(0);
 }
-if (values.bot !== 'greedy' && values.bot !== 'random') throw new Error(`unknown bot ${values.bot}`);
+if (!(BOT_NAMES as readonly string[]).includes(values.bot)) throw new Error(`unknown bot ${values.bot}; use ${BOT_NAMES.join(', ')}`);
 
 // npm запускает скрипт из packages/sim; пути пользователя — относительно INIT_CWD
 const cwd = process.env.INIT_CWD ?? process.cwd();

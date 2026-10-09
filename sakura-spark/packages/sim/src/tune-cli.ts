@@ -2,6 +2,7 @@ import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { parseLevel } from '@sakura/core';
+import { BOT_NAMES } from './bots.ts';
 import type { BotName } from './bots.ts';
 import { targetBand } from './targets.ts';
 import { formatLevel, tuneLevel } from './tune.ts';
@@ -27,6 +28,8 @@ if (values.help) {
   console.log(HELP);
   process.exit(0);
 }
+
+if (!(BOT_NAMES as readonly string[]).includes(values.bot)) throw new Error(`unknown bot ${values.bot}; use ${BOT_NAMES.join(', ')}`);
 
 const cwd = process.env.INIT_CWD ?? process.cwd();
 const levelsDir = resolve(import.meta.dirname, '../../../levels');
