@@ -57,6 +57,17 @@ export interface GameOptions {
   readonly lanterns?: LanternRule;
   /** Пороги очков для 1, 2, 3 звёзд. */
   readonly stars?: readonly [number, number, number];
+  /**
+   * Скрытая помощь (PRD: динамическая сложность): шанс, что досыпанная фишка придёт лучом или бомбой.
+   * Ставит сервер после серии поражений, игроку не показывается. См. assistForLossStreak.
+   */
+  readonly assist?: number;
+}
+
+/** PRD: после 5+ поражений подряд — мягкое облегчение, растущее с серией. */
+export function assistForLossStreak(losses: number): number {
+  if (losses < 5) return 0;
+  return Math.min(0.06, 0.02 + 0.01 * (losses - 5));
 }
 
 export type GameStatus = 'playing' | 'won' | 'lost';
@@ -95,6 +106,7 @@ export class Match3Game {
 
   constructor(options: GameOptions) {
     if (!Number.isInteger(options.moves) || options.moves < 1) throw new RangeError(`moves ${options.moves}`);
+    if (options.assist !== undefined && !(options.assist >= 0 && options.assist <= 0.2)) throw new RangeError(`assist ${options.assist}`);
     this.options = options;
     this.rng = new Rng(options.seed);
     this._movesLeft = options.moves;
@@ -135,6 +147,21 @@ export class Match3Game {
     this.jellyTotal = this.jelly.flat().reduce((a, b) => a + b, 0);
     this.jellyLeft = this.jellyTotal;
     this.ensurePlayable();
+  }
+
+  /**
+   * Копия партии для примерки ходов (бот, подсказки). С seed копия получает другой ГПСЧ —
+   * так примерка не подсматривает будущую досыпку. Историю такой копии воспроизводить нельзя.
+   */
+  clone(seed?: number): Match3Game {
+    const copy = Object.create(Match3Game.prototype) as Match3Game;
+    return Object.assign(copy, this, {
+      board: this.board.clone(),
+      rng: new Rng(seed ?? this.rng.state),
+      _history: [...this._history],
+      jelly: this.jelly.map((r) => [...r]),
+      collectedByColor: new Map(this.collectedByColor),
+    });
   }
 
   static replay(options: GameOptions, swaps: readonly Swap[]): Match3Game {
@@ -498,7 +525,10 @@ export class Match3Game {
         piece = this.board.makeLantern();
         this.lanternsSpawned++;
       } else {
-        piece = this.board.makePiece(this.board.randomColor(this.rng));
+        const color = this.board.randomColor(this.rng);
+        const assist = this.options.assist ?? 0;
+        const special = assist > 0 && this.rng.next() < assist ? (['lineH', 'lineV', 'bomb'] as const)[this.rng.int(3)]! : 'none';
+        piece = this.board.makePiece(color, special);
       }
       this.board.set(at, piece);
       return { piece, at };

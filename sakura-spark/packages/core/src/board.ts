@@ -123,6 +123,15 @@ export class Board {
     return exits;
   }
 
+  /** Независимая копия: фишки и блокеры неизменяемы, копируются только сетки. Порталы общие — они не меняются. */
+  clone(): Board {
+    const copy = Object.create(Board.prototype) as Board;
+    return Object.assign(copy, this, {
+      grid: this.grid.map((r) => [...r]),
+      blockers: this.blockers.map((r) => [...r]),
+    });
+  }
+
   inBounds(p: Pos): boolean {
     return p.row >= 0 && p.row < this.height && p.col >= 0 && p.col < this.width;
   }

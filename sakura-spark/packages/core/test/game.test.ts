@@ -139,3 +139,29 @@ test('dead board after a move triggers shuffle that keeps the same pieces', () =
   }
   assert.ok(shuffles > 0, 'shuffle path was exercised');
 });
+
+test('clone is independent and, with the same rng, plays identically', () => {
+  const game = new Match3Game(opts);
+  game.swap(game.validSwaps()[0]!);
+  const copy = game.clone();
+  const s = game.validSwaps()[0]!;
+  copy.swap(s);
+  assert.equal(game.movesLeft, opts.moves - 1, 'original untouched');
+  assert.equal(game.history.length, 1);
+  game.swap(s);
+  assert.equal(copy.score, game.score);
+  assert.deepEqual(copy.board.toStrings(), game.board.toStrings());
+});
+
+test('clone with another seed does not see the real refill', () => {
+  let differs = 0;
+  for (let seed = 0; seed < 10; seed++) {
+    const game = new Match3Game({ ...opts, seed });
+    const s = game.validSwaps()[0]!;
+    const peek = game.clone(seed + 1000);
+    peek.swap(s);
+    game.swap(s);
+    if (peek.board.toStrings().join() !== game.board.toStrings().join()) differs++;
+  }
+  assert.ok(differs >= 8);
+});

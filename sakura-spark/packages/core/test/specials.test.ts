@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { Board, comboKind, findMatches, Match3Game, specialForGroup } from '../src/index.ts';
+import { assistForLossStreak, Board, comboKind, findMatches, Match3Game, specialForGroup } from '../src/index.ts';
 import type { CascadeStep, Pos, Swap } from '../src/index.ts';
 
 /** Поле 5×5 без матчей: цвета идут диагоналями. */
@@ -202,4 +202,29 @@ test('random play creates specials and combos and stays replayable', () => {
   }
   assert.deepEqual([...made].sort(), ['bomb', 'lineH', 'lineV', 'rainbow']);
   assert.ok(combos.size >= 4, `combos seen: ${[...combos]}`);
+});
+
+test('assist spawns extra specials in refills, and only when set', () => {
+  const count = (assist: number | undefined) => {
+    let specials = 0;
+    for (let seed = 0; seed < 20; seed++) {
+      const game = new Match3Game({ width: 8, height: 8, colors: 5, moves: 15, seed, ...(assist === undefined ? {} : { assist }) });
+      while (game.status === 'playing') {
+        for (const e of game.swap(game.validSwaps()[0]!).events) {
+          if (e.type === 'cascade') specials += e.step.spawns.filter((x) => x.piece.special !== 'none').length;
+        }
+      }
+    }
+    return specials;
+  };
+  assert.equal(count(undefined), 0);
+  assert.ok(count(0.06) > 20);
+  assert.throws(() => new Match3Game({ width: 5, height: 5, colors: 5, moves: 5, seed: 1, assist: 0.5 }));
+});
+
+test('assistForLossStreak follows PRD: nothing before 5 losses, then grows and caps', () => {
+  assert.equal(assistForLossStreak(4), 0);
+  assert.equal(assistForLossStreak(5), 0.02);
+  assert.equal(assistForLossStreak(7), 0.04);
+  assert.equal(assistForLossStreak(50), 0.06);
 });
