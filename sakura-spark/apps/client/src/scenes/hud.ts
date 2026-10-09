@@ -28,6 +28,8 @@ export class Hud {
   private readonly counter: Phaser.GameObjects.Text;
   private readonly score: Phaser.GameObjects.Text;
   private readonly bar: Phaser.GameObjects.Graphics;
+  private readonly exit: Phaser.GameObjects.Text;
+  private readonly exitBg: Phaser.GameObjects.Arc;
   private readonly goals: { icon: Phaser.GameObjects.Image; text: Phaser.GameObjects.Text; check: Phaser.GameObjects.Text }[];
 
   constructor(
@@ -36,6 +38,7 @@ export class Hud {
     private readonly theme: Theme,
     private readonly k: number,
     private readonly lives: LivesView | null,
+    onExit: () => void,
   ) {
     const text = (size: number, color = theme.text, bold = false) => scene.add.text(0, 0, '', {
       fontFamily: FONT, fontSize: `${Math.round(size * k)}px`, color, fontStyle: bold ? 'bold' : 'normal',
@@ -51,7 +54,13 @@ export class Hud {
       text: text(17, theme.text, true),
       check: text(18, '#2fbf71', true).setText('✓'),
     }));
-    this.root = scene.add.container(0, 0, [
+    this.exitBg = scene.add.circle(0, 0, 15 * k, hexToInt(theme.hint), 0.18);
+    this.exit = scene.add.text(0, 0, '✕', {
+      fontFamily: FONT, fontSize: `${Math.round(17 * k)}px`, fontStyle: 'bold', color: theme.text,
+    }).setOrigin(0.5).setInteractive({ useHandCursor: true }).on('pointerup', onExit);
+    // зона нажатия больше значка — по нему попадают пальцем
+    this.exit.input!.hitArea.setTo(-14 * k, -14 * k, this.exit.width + 28 * k, this.exit.height + 28 * k);
+    this.root = scene.add.container(0, 0, [this.exitBg, this.exit,
       this.panel, this.title, this.counterLabel, this.counter, this.score, this.bar,
       ...this.goals.flatMap((g) => [g.icon, g.text, g.check]),
     ]);
@@ -71,7 +80,9 @@ export class Hud {
     this.title.setPosition(left, y + 10 * k).setText(t.level(this.level.id) + livesText);
     this.counterLabel.setPosition(left, y + 30 * k).setText(this.level.timeLimit ? t.time : t.moves);
     this.counter.setPosition(left, y + 44 * k);
-    this.score.setPosition(x + width - 14 * k, y + 10 * k).setOrigin(1, 0);
+    this.exit.setPosition(x + width - 24 * k, y + 24 * k);
+    this.exitBg.setPosition(x + width - 24 * k, y + 24 * k);
+    this.score.setPosition(x + width - 44 * k, y + 10 * k).setOrigin(1, 0);
 
     const n = this.goals.length;
     const gx = x + 100 * k;

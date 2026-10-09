@@ -7,6 +7,8 @@ import { t } from './i18n.ts';
 import { BootScene } from './scenes/BootScene.ts';
 import { GameScene } from './scenes/GameScene.ts';
 import type { GameOverResult, GameSceneData } from './scenes/GameScene.ts';
+import { MapScene } from './scenes/MapScene.ts';
+import type { MapData } from './scenes/MapScene.ts';
 import { MessageScene } from './scenes/MessageScene.ts';
 import type { MessageData } from './scenes/MessageScene.ts';
 import { telegram } from './telegram.ts';
@@ -49,12 +51,17 @@ const game = new Phaser.Game({
 
 /** Разница часов сервера и клиента: отсчёт до следующей жизни — по серверному времени. */
 let clockOffset = 0;
-let maxLevel = 1;
-let levelCount = bundled.size;
-let currentLevel = Number(params.get('level') ?? 0);
+/** Прогресс игрока: обновляется из ответов сервера, без лишних запросов. */
+const progress = {
+  maxLevel: 1,
+  levelCount: bundled.size,
+  stars: {} as Record<string, { stars: number }>,
+  lives: null as LivesView | null,
+};
 
-function show(scene: 'game' | 'message', data: GameSceneData | MessageData): void {
-  for (const key of ['game', 'message']) if (key !== scene && game.scene.isActive(key)) game.scene.stop(key);
+type SceneKey = 'game' | 'message' | 'map';
+function show(scene: SceneKey, data: GameSceneData | MessageData | MapData): void {
+  for (const key of ['game', 'message', 'map']) if (key !== scene && game.scene.isActive(key)) game.scene.stop(key);
   if (game.scene.isActive(scene)) game.scene.getScene(scene)!.scene.restart(data);
   else game.scene.start(scene, data);
 }
@@ -64,20 +71,30 @@ function message(title: string, text: string, extra: Partial<MessageData> = {}):
 }
 
 const toClient = (serverMs: number) => serverMs - clockOffset;
+const livesToClient = (l: LivesView): LivesView => ({ ...l, nextLifeAt: l.nextLifeAt === null ? null : toClient(l.nextLifeAt) });
+
+function showMap(focus?: number): void {
+  history.replaceState(null, '', `?${new URLSearchParams([...params].filter(([k]) => k !== 'level'))}`);
+  show('map', {
+    theme, dpr, levelCount: progress.levelCount, maxLevel: progress.maxLevel, stars: progress.stars,
+    lives: progress.lives, onPlay: (id) => void play(id), ...(focus !== undefined ? { focus } : {}),
+  });
+}
 
 async function play(levelId: number): Promise<void> {
-  currentLevel = levelId;
   history.replaceState(null, '', `?${new URLSearchParams({ ...Object.fromEntries(params), level: String(levelId) })}`);
   if (!api) return startScene(bundled.get(levelId) ?? bundled.get(1)!, randomSeed(), null, null);
   try {
     const attempt = await api.start(levelId);
-    startScene(attempt.level, attempt.seed, attempt.attemptId, attempt.lives);
+    progress.lives = livesToClient(attempt.lives);
+    startScene(attempt.level, attempt.seed, attempt.attemptId, progress.lives);
   } catch (e) {
     if (e instanceof ApiError && e.code === 'no_lives') {
-      const lives = e.body.lives as LivesView;
+      const lives = livesToClient(e.body.lives as LivesView);
+      progress.lives = lives;
       message(t.noLivesTitle, t.noLivesText, {
-        ...(lives.nextLifeAt ? { countdown: { until: toClient(lives.nextLifeAt), label: t.nextLife } } : {}),
-        button: { label: t.tryAgain, onClick: () => void play(levelId) },
+        ...(lives.nextLifeAt ? { countdown: { until: lives.nextLifeAt, label: t.nextLife } } : {}),
+        button: { label: t.toMap, onClick: () => showMap(levelId) },
       });
     } else if (e instanceof ApiError && e.code === 'level_locked') {
       await play(Number(e.body.maxLevel ?? 1));
@@ -88,6 +105,8 @@ async function play(levelId: number): Promise<void> {
 }
 
 function goOffline(levelId: number): void {
+  progress.maxLevel = bundled.size;
+  progress.levelCount = bundled.size;
   console.warn(t.offline);
   api = null;
   void play(bundled.has(levelId) ? levelId : 1);
@@ -95,19 +114,40 @@ function goOffline(levelId: number): void {
 
 const randomSeed = () => (params.get('seed') !== null ? Number(params.get('seed')) : Math.floor(Math.random() * 2 ** 31));
 
+function recordStars(levelId: number, stars: number): void {
+  const prev = progress.stars[levelId]?.stars ?? 0;
+  progress.stars[levelId] = { stars: Math.max(prev, stars) };
+}
+
 function startScene(level: LevelDef, seed: number, attemptId: string | null, lives: LivesView | null): void {
   const onGameOver = async (match: Match3Game, timedOut: boolean): Promise<GameOverResult> => {
-    if (!api || !attemptId) return { won: match.status === 'won', score: match.score, stars: match.stars, lives: null };
+    if (!api || !attemptId) {
+      const won = match.status === 'won';
+      if (won) recordStars(level.id, match.stars);
+      return { won, score: match.score, stars: match.stars, lives: null };
+    }
     const r = await api.finish(attemptId, match.history, timedOut);
-    maxLevel = Math.max(maxLevel, r.maxLevel);
-    const nextLifeAt = r.lives.nextLifeAt === null ? null : toClient(r.lives.nextLifeAt);
-    return { won: r.result === 'won', score: r.score, stars: r.stars, lives: { ...r.lives, nextLifeAt } };
+    progress.maxLevel = Math.max(progress.maxLevel, r.maxLevel);
+    progress.lives = livesToClient(r.lives);
+    if (r.result === 'won') recordStars(level.id, r.stars);
+    return { won: r.result === 'won', score: r.score, stars: r.stars, lives: progress.lives };
+  };
+  const onExit = async (match: Match3Game): Promise<void> => {
+    if (api && attemptId) {
+      // сервер закроет попытку как брошенную — жизнь сгорит
+      const r = await api.finish(attemptId, match.history, false).catch(() => null);
+      if (r) progress.lives = livesToClient(r.lives);
+    }
+    showMap(level.id);
   };
   show('game', {
-    level, seed, theme, dpr, lives, onGameOver,
-    onFinish: ({ won, next }) => {
-      const count = api ? levelCount : bundled.size;
-      void play(won && next && level.id < count ? level.id + 1 : level.id);
+    level, seed, theme, dpr, lives, onGameOver, onExit,
+    onFinish: (action) => {
+      if (action === 'map') return showMap(level.id);
+      if (action === 'retry') return void play(level.id);
+      // «Дальше» после последнего уровня — на карту: новые уровни выходят каждую неделю
+      if (level.id < progress.levelCount) void play(level.id + 1);
+      else showMap(level.id);
     },
   });
 }
@@ -117,21 +157,29 @@ async function boot(): Promise<void> {
     try {
       const me = await api.me();
       clockOffset = me.serverTime - Date.now();
-      maxLevel = me.maxLevel;
-      levelCount = me.levelCount;
+      progress.maxLevel = me.maxLevel;
+      progress.levelCount = me.levelCount;
+      progress.stars = { ...me.levels };
+      progress.lives = livesToClient(me.lives);
     } catch {
       api = null;
     }
   }
-  // по умолчанию — самый дальний открытый уровень (карта появится на этапе 7)
-  const limit = api ? Math.min(maxLevel, levelCount) : bundled.size;
-  const wanted = currentLevel >= 1 ? currentLevel : limit;
-  await play(Math.min(Math.max(1, wanted), limit));
+  if (!api) {
+    // офлайн открыты все уровни из бандла
+    progress.maxLevel = bundled.size;
+    progress.levelCount = bundled.size;
+  }
+  // ?level=N — сразу в уровень (разработка, ссылки); иначе — карта
+  const wanted = Number(params.get('level') ?? 0);
+  if (wanted >= 1) await play(Math.min(wanted, Math.min(progress.maxLevel, progress.levelCount)));
+  else showMap();
 }
 
 game.events.once('ready', () => {
   game.scene.add('game', GameScene, false);
   game.scene.add('message', MessageScene, false);
+  game.scene.add('map', MapScene, false);
   // Boot рисует текстуры и сразу передаёт управление
   game.scene.add('boot', BootScene, true, { onReady: () => void boot() });
 });

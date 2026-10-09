@@ -22,7 +22,9 @@ export interface GameSceneData {
   readonly lives: LivesView | null;
   /** Итог партии: онлайн — от сервера (он проигрывает ходы сам), офлайн — локальный. */
   readonly onGameOver: (game: Match3Game, timedOut: boolean) => Promise<GameOverResult>;
-  readonly onFinish: (result: { won: boolean; next: boolean }) => void;
+  readonly onFinish: (action: 'next' | 'retry' | 'map') => void;
+  /** Игрок вышел посреди уровня (попытка закрывается как проигрыш). */
+  readonly onExit: (game: Match3Game) => Promise<void>;
 }
 
 export interface GameOverResult {
@@ -96,7 +98,7 @@ export class GameScene extends Phaser.Scene {
     this.maskShape = this.make.graphics({}, false);
     this.pieceLayer.setMask(this.maskShape.createGeometryMask());
     this.selectImage = this.add.image(0, 0, 'select').setDepth(4).setVisible(false);
-    this.hud = new Hud(this, data.level, data.theme, data.dpr, data.lives);
+    this.hud = new Hud(this, data.level, data.theme, data.dpr, data.lives, () => this.confirmExit());
 
     this.computeLayout();
     this.syncFromCore(false);
@@ -513,54 +515,107 @@ export class GameScene extends Phaser.Scene {
       });
   }
 
-  private showResult(result: GameOverResult): void {
-    const { won } = result;
+  /** Модальное окно поверх поля: заголовок, тело, кнопки. Возвращает функцию закрытия. */
+  private dialog(opts: {
+    title: string;
+    height: number;
+    body?: (y: number, w: number) => Phaser.GameObjects.GameObject[];
+    buttons: { label: string; primary: boolean; onClick: () => void }[];
+  }): () => void {
     const { theme, dpr: k } = this.data_;
     const W = this.scale.width;
     const H = this.scale.height;
     const pw = Math.min(W - 40 * k, 320 * k);
-    const ph = 310 * k;
+    const ph = opts.height * k;
     const x = (W - pw) / 2;
     const y = (H - ph) / 2;
     const dim = this.add.rectangle(0, 0, W, H, 0x000000, 0.45).setOrigin(0).setInteractive();
     const panel = this.add.graphics().fillStyle(hexToInt(theme.panel), 1).fillRoundedRect(x, y, pw, ph, 24 * k);
-    const title = this.add.text(W / 2, y + 36 * k, won ? t.win : t.lose, {
-      fontFamily: FONT, fontSize: `${Math.round(26 * k)}px`, fontStyle: 'bold', color: theme.text,
+    const title = this.add.text(W / 2, y + 36 * k, opts.title, {
+      fontFamily: FONT, fontSize: `${Math.round(24 * k)}px`, fontStyle: 'bold', color: theme.text,
     }).setOrigin(0.5);
-    const stars = [0, 1, 2].map((i) => {
-      const s = this.add.image(W / 2 + (i - 1) * 70 * k, y + 100 * k - (i === 1 ? 10 * k : 0), 'star').setDisplaySize(62 * k, 62 * k);
-      s.setTint(i < result.stars ? 0xffc93c : 0xd9d2e3);
-      return s;
+    const body = opts.body?.(y, pw) ?? [];
+    const bw = pw - 48 * k;
+    const bh = 46 * k;
+    const buttons = opts.buttons.flatMap((b, i) => {
+      const cy = y + ph - (opts.buttons.length - i) * 56 * k + 12 * k - 8 * k;
+      const g = this.add.graphics()
+        .fillStyle(b.primary ? hexToInt(theme.button) : hexToInt(theme.hint), b.primary ? 1 : 0.25)
+        .fillRoundedRect(W / 2 - bw / 2, cy - bh / 2, bw, bh, bh / 2);
+      const txt = this.add.text(W / 2, cy, b.label, {
+        fontFamily: FONT, fontSize: `${Math.round(18 * k)}px`, fontStyle: 'bold', color: b.primary ? theme.buttonText : theme.text,
+      }).setOrigin(0.5);
+      const hit = this.add.zone(W / 2, cy, bw, bh).setInteractive({ useHandCursor: true });
+      hit.on('pointerup', b.onClick);
+      return [g, txt, hit];
     });
+    const all = [dim, panel, title, ...body, ...buttons];
+    for (const o of all) (o as unknown as Phaser.GameObjects.Components.Depth).setDepth(20);
+    this.dialogButtons = opts.buttons.map((b, i) => ({ label: b.label, x: W / 2, y: y + ph - (opts.buttons.length - i) * 56 * k + 4 * k }));
+    return () => {
+      for (const o of all) o.destroy();
+      this.dialogButtons = [];
+    };
+  }
+
+  /** Кнопки открытого диалога в пикселях canvas — для e2e. */
+  dialogButtons: { label: string; x: number; y: number }[] = [];
+
+  private showResult(result: GameOverResult): void {
+    const { won } = result;
+    const { theme, dpr: k } = this.data_;
+    const W = this.scale.width;
     const lives = result.lives;
     const livesLine = !lives ? '' : lives.infiniteUntil ? t.livesInfinite
       : `${t.lives(lives.lives, lives.max)}${!won && lives.nextLifeAt ? ` · ${t.nextLife(formatTime((lives.nextLifeAt - Date.now()) / 1000))}` : ''}`;
-    const score = this.add.text(W / 2, y + 150 * k, `${t.score}: ${result.score}${livesLine ? `\n${livesLine}` : ''}`, {
-      fontFamily: FONT, fontSize: `${Math.round(16 * k)}px`, color: theme.hint, align: 'center',
-    }).setOrigin(0.5);
-    const button = (label: string, cy: number, primary: boolean, onClick: () => void) => {
-      const bw = pw - 48 * k;
-      const bh = 46 * k;
-      const g = this.add.graphics()
-        .fillStyle(primary ? hexToInt(theme.button) : hexToInt(theme.hint), primary ? 1 : 0.25)
-        .fillRoundedRect(W / 2 - bw / 2, cy - bh / 2, bw, bh, bh / 2);
-      const txt = this.add.text(W / 2, cy, label, {
-        fontFamily: FONT, fontSize: `${Math.round(18 * k)}px`, fontStyle: 'bold', color: primary ? theme.buttonText : theme.text,
-      }).setOrigin(0.5);
-      const hit = this.add.zone(W / 2, cy, bw, bh).setInteractive({ useHandCursor: true });
-      hit.on('pointerup', onClick);
-      return [g, txt, hit];
-    };
-    const buttons = won
-      ? [...button(t.next, y + 206 * k, true, () => this.data_.onFinish({ won, next: true })),
-        ...button(t.retry, y + 260 * k, false, () => this.data_.onFinish({ won, next: false }))]
-      : [...button(t.retry, y + 230 * k, true, () => this.data_.onFinish({ won, next: false }))];
-    const all = [dim, panel, title, ...stars, score, ...buttons];
-    for (const o of all) (o as unknown as Phaser.GameObjects.Components.Depth).setDepth(20);
+    const finish = this.data_.onFinish;
+    let stars: Phaser.GameObjects.Image[] = [];
+    this.dialog({
+      title: won ? t.win : t.lose,
+      height: won ? 360 : 320,
+      body: (y) => {
+        stars = [0, 1, 2].map((i) => this.add.image(W / 2 + (i - 1) * 70 * k, y + 100 * k - (i === 1 ? 10 * k : 0), 'star')
+          .setDisplaySize(62 * k, 62 * k).setTint(i < result.stars ? 0xffc93c : 0xd9d2e3));
+        const score = this.add.text(W / 2, y + 150 * k, `${t.score}: ${result.score}${livesLine ? `\n${livesLine}` : ''}`, {
+          fontFamily: FONT, fontSize: `${Math.round(16 * k)}px`, color: theme.hint, align: 'center',
+        }).setOrigin(0.5);
+        return [...stars, score];
+      },
+      buttons: won
+        ? [{ label: t.next, primary: true, onClick: () => finish('next') },
+          { label: t.retry, primary: false, onClick: () => finish('retry') },
+          { label: t.toMap, primary: false, onClick: () => finish('map') }]
+        : [{ label: t.retry, primary: true, onClick: () => finish('retry') },
+          { label: t.toMap, primary: false, onClick: () => finish('map') }],
+    });
     stars.forEach((s, i) => {
       const target = s.scale;
       s.setScale(0.01);
       this.tweens.add({ targets: s, scale: target, delay: 150 + i * 160, duration: 260, ease: 'Back.easeOut' });
+    });
+  }
+
+  /** Выход посреди уровня: подтверждение, потом партия закрывается как брошенная. */
+  private confirmExit(): void {
+    if (this.finished || this.busy) return;
+    const { theme, dpr: k } = this.data_;
+    const W = this.scale.width;
+    const close = this.dialog({
+      title: t.exitTitle,
+      height: 250,
+      body: (y, pw) => [this.add.text(W / 2, y + 70 * k, t.exitText, {
+        fontFamily: FONT, fontSize: `${Math.round(15 * k)}px`, color: theme.hint, align: 'center', wordWrap: { width: pw - 40 * k },
+      }).setOrigin(0.5, 0)],
+      buttons: [
+        { label: t.exitNo, primary: true, onClick: () => close() },
+        {
+          label: t.exitYes, primary: false, onClick: () => {
+            close();
+            this.finished = true;
+            void this.data_.onExit(this.match);
+          },
+        },
+      ],
     });
   }
 }
