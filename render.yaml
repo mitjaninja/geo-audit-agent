@@ -1,0 +1,24 @@
+# Render Blueprint для Sakura Spark (игра лежит в каталоге sakura-spark/).
+# Render → New → Blueprint → этот репозиторий, ветка sakura-spark → ввести BOT_TOKEN → Apply.
+# Сервер сам возьмёт адрес из RENDER_EXTERNAL_URL и при старте поставит вебхук и кнопку «Играть».
+services:
+  - type: web
+    name: sakura-spark
+    runtime: docker
+    dockerfilePath: ./sakura-spark/Dockerfile
+    dockerContext: ./sakura-spark
+    # диск под SQLite есть только на платных инстансах
+    plan: starter
+    region: frankfurt
+    healthCheckPath: /api/health
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: WEBHOOK_SECRET
+        generateValue: true
+      - key: DB_PATH
+        value: /data/sakura.db
+    disk:
+      name: sakura-data
+      mountPath: /data
+      sizeGB: 1

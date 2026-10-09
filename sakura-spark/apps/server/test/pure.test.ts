@@ -71,3 +71,13 @@ test('lives: empty means no play; refund returns a life; infinite lives are not 
   assert.equal(view(inf, NOW).infiniteUntil, NOW + 3600_000);
   assert.equal(view(inf, NOW).nextLifeAt, null);
 });
+
+test('config: public URL comes from the host (PUBLIC_URL > Render > Fly > localhost)', async () => {
+  const { loadConfig } = await import('../src/config.ts');
+  const base = { BOT_TOKEN: 't' };
+  assert.equal(loadConfig({ ...base }).publicUrl, 'http://localhost:8787');
+  assert.equal(loadConfig({ ...base, FLY_APP_NAME: 'sk' }).publicUrl, 'https://sk.fly.dev');
+  assert.equal(loadConfig({ ...base, FLY_APP_NAME: 'sk', RENDER_EXTERNAL_URL: 'https://sk.onrender.com' }).publicUrl, 'https://sk.onrender.com');
+  assert.equal(loadConfig({ ...base, RENDER_EXTERNAL_URL: 'https://a', PUBLIC_URL: 'https://b' }).publicUrl, 'https://b');
+  assert.throws(() => loadConfig({}), /BOT_TOKEN/);
+});
