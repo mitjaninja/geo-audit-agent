@@ -250,3 +250,16 @@ async function unlockLevel(id: number): Promise<void> {
     assert.equal(fin.body.result, 'won', `unlock: won level ${l}`);
   }
 }
+
+test('bot profile and setup: limits respected, webhook and menu button point to the server', async () => {
+  const { BOT_TEXT, setupBot, setupProfile } = await import('../src/bot.ts');
+  assert.ok(BOT_TEXT.description.length <= 512);
+  assert.ok(BOT_TEXT.shortDescription.length <= 120);
+  const api = new BotApi(TOKEN, fakeFetch);
+  await setupProfile(api);
+  await setupBot(api, 'https://sakura.example/', 's3cret');
+  assert.deepEqual(botCalls.map((c) => c.method), ['setMyDescription', 'setMyShortDescription', 'setMyCommands', 'setWebhook', 'setChatMenuButton']);
+  assert.equal(botCalls[3]!.params.url, 'https://sakura.example/telegram/webhook');
+  assert.equal(botCalls[3]!.params.secret_token, 's3cret');
+  assert.deepEqual((botCalls[4]!.params.menu_button as any).web_app, { url: 'https://sakura.example/' });
+});

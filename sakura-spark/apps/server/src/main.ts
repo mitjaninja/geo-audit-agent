@@ -1,6 +1,6 @@
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { BotApi } from './bot.ts';
+import { BotApi, setupBot, setupProfile } from './bot.ts';
 import { loadConfig } from './config.ts';
 import { createApp } from './http.ts';
 import { loadLevels } from './levels.ts';
@@ -25,6 +25,14 @@ const server = createApp({
 
 server.listen(config.port, () => {
   console.log(`Sakura Spark server on :${config.port} — ${levels.size} levels, db ${config.dbPath}${config.devAuth ? ', DEV_AUTH on' : ''}`);
+  // вебхук и кнопка меню ставятся при каждом старте: адрес мог смениться, вызовы идемпотентны
+  if (config.botToken && config.webhookSecret && config.publicUrl.startsWith('https://')) {
+    const api = new BotApi(config.botToken);
+    setupProfile(api)
+      .then(() => setupBot(api, config.publicUrl, config.webhookSecret))
+      .then(() => console.log(`bot: webhook ${config.publicUrl}/telegram/webhook`))
+      .catch((e) => console.error(`bot setup failed: ${String(e)}`));
+  }
 });
 
 const shutdown = () => server.close(() => {

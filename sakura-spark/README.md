@@ -109,19 +109,25 @@ Match3Game.replay(game.options, game.history).score === game.score;
 Хранилище — встроенный в Node 22 SQLite (`node:sqlite`) за асинхронным интерфейсом `Store`,
 чтобы позже заменить на Postgres без переделки логики.
 
-### Запуск в Telegram
+### Запуск в Telegram (Fly.io)
 
-1. Создать бота у @BotFather, получить токен.
-2. Нужен публичный HTTPS-адрес (любой хостинг с Node 22.13+ или туннель для проверки).
-3. Собрать клиент и запустить сервер — он раздаёт и клиент, и API с одного адреса:
-   ```bash
-   npm install && npm run build
-   BOT_TOKEN=… PUBLIC_URL=https://… WEBHOOK_SECRET=$(openssl rand -hex 16) DB_PATH=/data/sakura.db npm run server
-   ```
-4. Один раз настроить бота — вебхук и кнопку меню «Играть»:
-   ```bash
-   BOT_TOKEN=… PUBLIC_URL=https://… WEBHOOK_SECRET=<тот же> npm run setup-bot
-   ```
-5. Написать боту `/start` → кнопка «Играть» открывает игру.
+Сервер раздаёт клиент и API с одного адреса. При старте он сам обновляет профиль бота и ставит вебхук
+и кнопку меню «Играть» на `https://<app>.fly.dev`. SQLite живёт на томе `/data`, поэтому машина одна.
 
-Переменные — в `apps/server/.env.example`.
+```bash
+cd sakura-spark
+fly auth login
+fly apps create sakura-spark                 # имя занято — возьмите другое и поменяйте app в fly.toml
+fly volumes create sakura_data --region ams --size 1
+fly secrets set BOT_TOKEN=<токен от @BotFather> WEBHOOK_SECRET=$(openssl rand -hex 16)
+fly deploy
+```
+
+Потом написать боту `/start`, и кнопка «Играть» откроет игру. Логи: `fly logs`, там будет строка
+`bot: webhook https://…/telegram/webhook`.
+
+Без Fly подойдёт любой хостинг, где есть Docker или Node 22.13+ и HTTPS: нужны переменные `BOT_TOKEN`,
+`WEBHOOK_SECRET`, `PUBLIC_URL` (https-адрес) и `DB_PATH` на постоянном диске. Профиль бота без деплоя
+обновляет `BOT_TOKEN=… npm run setup-bot`.
+
+Переменные описаны в `apps/server/.env.example`.

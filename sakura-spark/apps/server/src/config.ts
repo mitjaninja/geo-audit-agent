@@ -23,7 +23,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   return {
     port: Number(env.PORT ?? 8787),
     botToken,
-    publicUrl: env.PUBLIC_URL ?? `http://localhost:${env.PORT ?? 8787}`,
+    // на Fly.io адрес приложения известен по его имени
+    publicUrl: env.PUBLIC_URL
+      ?? (env.FLY_APP_NAME ? `https://${env.FLY_APP_NAME}.fly.dev` : `http://localhost:${env.PORT ?? 8787}`),
     webhookSecret: env.WEBHOOK_SECRET ?? '',
     dbPath: env.DB_PATH ?? resolve(root, 'data/sakura.db'),
     levelsDir: env.LEVELS_DIR ?? resolve(root, 'levels'),

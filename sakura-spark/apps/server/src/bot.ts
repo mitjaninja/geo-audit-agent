@@ -18,6 +18,15 @@ export class BotApi {
 }
 
 export const BOT_TEXT = {
+  /** Описание в пустом чате с ботом (до 512 символов). */
+  description:
+    'Sakura Spark — уютная match-3 в аниме-стиле. 🌸\n\n' +
+    'Тёмный дух Курогири украл фестивальные фонари Хоширо, и сакура перестала цвести. ' +
+    'Собирай светящиеся кристаллы по три и больше, открывай районы города и возвращай свет вместе с Микой и тануки Поном.\n\n' +
+    'Играй прямо в Telegram — и зови друзей в чаты.',
+  /** Короткое описание в профиле бота (до 120 символов). */
+  shortDescription: 'Match-3 в аниме-стиле: собирай кристаллы, зажигай фонари и возвращай весну в Хоширо 🌸',
+  commands: [{ command: 'start', description: 'Играть' }],
   start: (name: string) =>
     `Привет, ${name}! 🌸\n\nКурогири украл фестивальные фонари, и сакура в Хоширо перестала цвести. ` +
     'Помоги Мике вернуть свет — собирай кристаллы по три и больше.',
@@ -41,6 +50,13 @@ export async function handleUpdate(update: unknown, api: BotApi, webAppUrl: stri
     text: BOT_TEXT.start(msg.from?.first_name ?? 'путник'),
     reply_markup: { inline_keyboard: [[{ text: BOT_TEXT.play, web_app: { url: webAppUrl } }]] },
   });
+}
+
+/** Профиль бота: описание, короткое описание, команды. Не зависит от адреса сервера. */
+export async function setupProfile(api: BotApi): Promise<void> {
+  await api.call('setMyDescription', { description: BOT_TEXT.description });
+  await api.call('setMyShortDescription', { short_description: BOT_TEXT.shortDescription });
+  await api.call('setMyCommands', { commands: BOT_TEXT.commands });
 }
 
 /** Настройка бота: вебхук с секретом и кнопка меню, открывающая игру. */
