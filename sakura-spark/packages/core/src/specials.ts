@@ -1,7 +1,7 @@
 import type { Board } from './board.ts';
 import type { ComboKind, MatchGroup, Piece, Pos, Special } from './types.ts';
 
-export type MadeSpecial = Exclude<Special, 'none'>;
+export type MadeSpecial = 'lineH' | 'lineV' | 'bomb' | 'rainbow';
 
 const key = (p: Pos) => `${p.row},${p.col}`;
 
@@ -71,6 +71,7 @@ export function blastArea(board: Board, at: Pos, special: 'lineH' | 'lineV' | 'b
 export function comboKind(a: Piece, b: Piece): ComboKind | null {
   const isLine = (s: Special) => s === 'lineH' || s === 'lineV';
   const [x, y] = [a.special, b.special];
+  if (x === 'lantern' || y === 'lantern') return null;
   if (x === 'rainbow' && y === 'rainbow') return 'sakuraStorm';
   if (x === 'rainbow' || y === 'rainbow') {
     const other = x === 'rainbow' ? y : x;

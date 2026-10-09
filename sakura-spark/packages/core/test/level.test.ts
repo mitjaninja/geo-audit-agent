@@ -1,0 +1,85 @@
+import assert from 'node:assert/strict';
+import { readdirSync, readFileSync } from 'node:fs';
+import { test } from 'node:test';
+import { gameOptionsFromLevel, LevelError, Match3Game, parseLevel, Rng } from '../src/index.ts';
+
+const LEVELS_DIR = new URL('../../../levels/', import.meta.url);
+
+const valid = {
+  id: 7, width: 7, height: 7, colors: 5, moves: 20, difficulty: 'hard',
+  goals: [{ type: 'score', target: 1000 }], stars: [1000, 2000, 3000],
+};
+
+function errorsOf(input: unknown): string[] {
+  try {
+    parseLevel(input);
+  } catch (e) {
+    assert.ok(e instanceof LevelError);
+    return e.errors;
+  }
+  assert.fail('expected LevelError');
+}
+
+test('valid level parses and builds a game', () => {
+  const level = parseLevel(valid);
+  assert.equal(level.difficulty, 'hard');
+  const game = new Match3Game(gameOptionsFromLevel(level, 1));
+  assert.equal(game.movesLeft, 20);
+  assert.equal(game.status, 'playing');
+});
+
+test('all errors are reported at once', () => {
+  const errors = errorsOf({ ...valid, id: 0, moves: -1, difficulty: 'easy', stars: [3, 2, 1] });
+  assert.equal(errors.length, 4, errors.join('; '));
+});
+
+test('goal consistency checks', () => {
+  assert.match(errorsOf({ ...valid, goals: [{ type: 'jelly' }] }).join(), /jelly grid/);
+  assert.match(errorsOf({ ...valid, goals: [{ type: 'lanterns', count: 2 }] }).join(), /lanterns rule/);
+  assert.match(errorsOf({ ...valid, goals: [{ type: 'collect', color: 5, count: 10 }] }).join(), /color/);
+  assert.match(errorsOf({ ...valid, goals: [] }).join(), /1\.\.3/);
+  assert.match(errorsOf({ ...valid, goals: [{ type: 'fog' }] }).join(), /type/);
+  assert.match(errorsOf({ ...valid, goals: [{ type: 'score', target: 1 }, { type: 'score', target: 2 }] }).join(), /duplicate/);
+  assert.match(errorsOf({
+    ...valid, lanterns: { total: 1, maxOnBoard: 1, spawnChance: 0.5 }, goals: [{ type: 'lanterns', count: 3 }],
+  }).join(), /total/);
+  assert.match(errorsOf({ ...valid, lanterns: { total: 1, maxOnBoard: 1, spawnChance: 0.5 } }).join(), /without a lanterns goal/);
+});
+
+test('grid checks', () => {
+  const row = '#######';
+  assert.match(errorsOf({ ...valid, shape: [row] }).join(), /shape/);
+  assert.match(errorsOf({ ...valid, shape: Array(7).fill('###x###') }).join(), /bad characters/);
+  const shape = ['_######', ...Array(6).fill(row)];
+  const jelly = ['1000000', ...Array(6).fill('0000000')];
+  assert.match(errorsOf({ ...valid, shape, jelly, goals: [{ type: 'jelly' }] }).join(), /hole/);
+  assert.match(errorsOf({ ...valid, shape, layout: Array(7).fill('0123401') }).join(), /exclusive/);
+});
+
+test('non-object input', () => {
+  assert.throws(() => parseLevel(null), LevelError);
+  assert.throws(() => parseLevel([]), LevelError);
+});
+
+test('every level in levels/ is valid, named by id, and playable', () => {
+  const files = readdirSync(LEVELS_DIR).filter((f) => f.endsWith('.json')).sort();
+  assert.ok(files.length >= 3);
+  const ids = new Set<number>();
+  for (const file of files) {
+    const level = parseLevel(JSON.parse(readFileSync(new URL(file, LEVELS_DIR), 'utf8')));
+    assert.equal(file, `${String(level.id).padStart(4, '0')}.json`);
+    assert.ok(!ids.has(level.id));
+    ids.add(level.id);
+    let wins = 0;
+    for (let seed = 0; seed < 20; seed++) {
+      const game = new Match3Game(gameOptionsFromLevel(level, seed));
+      const rng = new Rng(seed);
+      while (game.status === 'playing') {
+        const s = game.validSwaps();
+        game.swap(s[rng.int(s.length)]!);
+      }
+      if (game.status === 'won') wins++;
+    }
+    assert.ok(wins > 0, `${file}: even a random player wins sometimes`);
+  }
+});

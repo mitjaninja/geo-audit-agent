@@ -6,6 +6,8 @@ import {
   allCells, anchorFor, blastArea, colCells, comboKind, rowCells, specialForGroup, squareCells,
 } from './specials.ts';
 import type { MadeSpecial } from './specials.ts';
+import { starsFor } from './goals.ts';
+import type { Goal, GoalProgress, LanternRule } from './goals.ts';
 import type {
   Activation, Color, ComboKind, CascadeStep, Fall, GameEvent, MatchGroup, Pos, Spawn, Swap, SwapResult,
 } from './types.ts';
@@ -13,6 +15,8 @@ import type {
 export const POINTS_PER_PIECE = 20;
 /** Бонус за рождение спецфишки, не умножается на каскад. */
 export const SPECIAL_BONUS: Readonly<Record<MadeSpecial, number>> = { lineH: 60, lineV: 60, bomb: 100, rainbow: 200 };
+/** «Финальный салют»: очки за каждый неиспользованный ход при победе. */
+export const FINALE_BONUS_PER_MOVE = 100;
 
 /** Что снимает шаг: матчи + стартовые цели (комбо) + клетки, «съеденные» комбо без срабатывания. */
 interface StepPlan {
@@ -35,11 +39,31 @@ export interface GameOptions {
   readonly colors: number;
   readonly moves: number;
   readonly seed: number;
-  /** Заданная расстановка (формат Board.fromStrings). Без готовых матчей. */
+  /** Форма поля: # — клетка, _ — дыра. Без неё поле прямоугольное. */
+  readonly shape?: readonly string[];
+  /** Заданная расстановка (формат Board.fromStrings). Без готовых матчей; дыры — как в shape. */
   readonly layout?: readonly string[];
+  /** Слои желе по клеткам: цифры 0–2, в дырах — _. */
+  readonly jelly?: readonly string[];
+  /** Пустой список — песочница: победы нет, партия идёт до конца ходов. */
+  readonly goals?: readonly Goal[];
+  readonly lanterns?: LanternRule;
+  /** Пороги очков для 1, 2, 3 звёзд. */
+  readonly stars?: readonly [number, number, number];
 }
 
-export type GameStatus = 'playing' | 'out_of_moves';
+export type GameStatus = 'playing' | 'won' | 'lost';
+
+function holesFromShape(shape: readonly string[] | undefined, width: number, height: number): Pos[] {
+  if (!shape) return [];
+  if (shape.length !== height || shape.some((r) => r.length !== width)) throw new Error(`shape must be ${width}x${height}`);
+  const holes: Pos[] = [];
+  shape.forEach((line, row) => [...line].forEach((ch, col) => {
+    if (ch === '_') holes.push({ row, col });
+    else if (ch !== '#') throw new Error(`shape: bad char '${ch}' at ${row},${col}`);
+  }));
+  return holes;
+}
 
 /**
  * Партия match-3. Вся случайность — из сида, поэтому партию можно
@@ -51,24 +75,51 @@ export class Match3Game {
   private readonly rng: Rng;
   private _movesLeft: number;
   private _score = 0;
+  private _won = false;
   private readonly _history: Swap[] = [];
+  private readonly jelly: number[][];
+  private readonly jellyTotal: number;
+  private jellyLeft: number;
+  private readonly collectedByColor = new Map<Color, number>();
+  private lanternsSpawned = 0;
+  private lanternsCollected = 0;
 
   constructor(options: GameOptions) {
     if (!Number.isInteger(options.moves) || options.moves < 1) throw new RangeError(`moves ${options.moves}`);
     this.options = options;
     this.rng = new Rng(options.seed);
     this._movesLeft = options.moves;
+    const holes = holesFromShape(options.shape, options.width, options.height);
+
     if (options.layout) {
-      this.board = Board.fromStrings([...options.layout], options.colors);
+      this.board = Board.fromStrings(options.layout, options.colors);
       if (this.board.width !== options.width || this.board.height !== options.height) {
         throw new Error(`layout is ${this.board.width}x${this.board.height}, expected ${options.width}x${options.height}`);
       }
-      if (this.board.toStrings().some((r) => r.includes('.'))) throw new Error('layout has empty cells');
+      if (options.shape && holes.some((h) => !this.board.isHole(h))) throw new Error('layout holes differ from shape');
+      if (this.board.playableCells().some((p) => !this.board.get(p))) throw new Error('layout has empty cells');
       if (findMatches(this.board).length > 0) throw new Error('layout has ready matches');
+      this.lanternsSpawned = this.board.playableCells().filter((p) => this.board.get(p)!.special === 'lantern').length;
     } else {
-      this.board = new Board(options.width, options.height, options.colors);
+      this.board = new Board(options.width, options.height, options.colors, holes);
       this.board.fillWithoutMatches(this.rng);
+      this.placeStartLanterns();
     }
+
+    this.jelly = Array.from({ length: options.height }, () => Array<number>(options.width).fill(0));
+    if (options.jelly) {
+      if (options.jelly.length !== options.height || options.jelly.some((r) => r.length !== options.width)) {
+        throw new Error(`jelly must be ${options.width}x${options.height}`);
+      }
+      options.jelly.forEach((line, row) => [...line].forEach((ch, col) => {
+        if (ch === '_' || ch === '0') return;
+        if (ch !== '1' && ch !== '2') throw new Error(`jelly: bad char '${ch}' at ${row},${col}`);
+        if (this.board.isHole({ row, col })) throw new Error(`jelly on a hole at ${row},${col}`);
+        this.jelly[row]![col] = Number(ch);
+      }));
+    }
+    this.jellyTotal = this.jelly.flat().reduce((a, b) => a + b, 0);
+    this.jellyLeft = this.jellyTotal;
     this.ensurePlayable();
   }
 
@@ -93,7 +144,33 @@ export class Match3Game {
   }
 
   get status(): GameStatus {
-    return this._movesLeft > 0 ? 'playing' : 'out_of_moves';
+    if (this._won) return 'won';
+    return this._movesLeft > 0 ? 'playing' : 'lost';
+  }
+
+  get stars(): 0 | 1 | 2 | 3 {
+    return this.options.stars ? starsFor(this._score, this.options.stars, this._won) : 0;
+  }
+
+  jellyAt(p: Pos): number {
+    return this.jelly[p.row]?.[p.col] ?? 0;
+  }
+
+  goalProgress(): GoalProgress[] {
+    return (this.options.goals ?? []).map((goal) => {
+      switch (goal.type) {
+        case 'score':
+          return { goal, current: this._score, target: goal.target, done: this._score >= goal.target };
+        case 'jelly':
+          return { goal, current: this.jellyTotal - this.jellyLeft, target: this.jellyTotal, done: this.jellyLeft === 0 };
+        case 'lanterns':
+          return { goal, current: this.lanternsCollected, target: goal.count, done: this.lanternsCollected >= goal.count };
+        case 'collect': {
+          const n = this.collectedByColor.get(goal.color) ?? 0;
+          return { goal, current: Math.min(n, goal.count), target: goal.count, done: n >= goal.count };
+        }
+      }
+    });
   }
 
   validSwaps(): Swap[] {
@@ -107,7 +184,7 @@ export class Match3Game {
   swap(swap: Swap): SwapResult {
     if (this.status !== 'playing') return { valid: false, events: [] };
     if (!isValidSwap(this.board, swap)) {
-      const adjacent = this.board.inBounds(swap.a) && this.board.inBounds(swap.b) && isAdjacent(swap.a, swap.b);
+      const adjacent = this.board.isPlayable(swap.a) && this.board.isPlayable(swap.b) && isAdjacent(swap.a, swap.b);
       return { valid: false, events: adjacent ? [{ type: 'swap', swap }, { type: 'swapBack', swap }] : [] };
     }
 
@@ -124,7 +201,16 @@ export class Match3Game {
       if (!plan) break;
       events.push({ type: 'cascade', step: this.resolveStep(index, plan), index });
     }
-    events.push(...this.ensurePlayable());
+
+    const goals = this.goalProgress();
+    if (goals.length > 0 && goals.every((g) => g.done)) {
+      this._won = true;
+      const bonus = this._movesLeft * FINALE_BONUS_PER_MOVE;
+      this._score += bonus;
+      events.push({ type: 'finale', movesLeft: this._movesLeft, bonus });
+    } else {
+      events.push(...this.ensurePlayable());
+    }
     return { valid: true, events };
   }
 
@@ -193,7 +279,8 @@ export class Match3Game {
       const p = queue[i]!;
       if (cleared.has(key(p))) continue;
       const piece = this.board.get(p);
-      if (!piece) continue;
+      // фонарики неуязвимы: их можно только довести до низа
+      if (!piece || piece.special === 'lantern') continue;
       cleared.set(key(p), p);
       if (piece.special === 'none') continue;
       activations.push({ at: p, special: piece.special });
@@ -205,7 +292,18 @@ export class Match3Game {
       }
     }
 
-    for (const p of cleared.values()) this.board.set(p, null);
+    const jellyHit: Pos[] = [];
+    for (const p of cleared.values()) {
+      const color = this.board.get(p)?.color;
+      if (color !== undefined && color !== null) this.collectedByColor.set(color, (this.collectedByColor.get(color) ?? 0) + 1);
+      this.board.set(p, null);
+      const row = this.jelly[p.row]!;
+      if (row[p.col]! > 0) {
+        row[p.col]!--;
+        this.jellyLeft--;
+        jellyHit.push(p);
+      }
+    }
     const created: Spawn[] = toCreate.map(({ at, special, color }) => {
       const piece = special === 'rainbow' ? this.board.makeRainbow() : this.board.makePiece(color, special);
       this.board.set(at, piece);
@@ -217,11 +315,53 @@ export class Match3Game {
     this._score += scoreGained;
 
     const falls = this.applyGravity();
+    const lanternsCollected: { id: number; at: Pos }[] = [];
+    for (;;) {
+      const exits = this.lanternsAtExits();
+      if (exits.length === 0) break;
+      for (const { id, at } of exits) {
+        this.board.set(at, null);
+        lanternsCollected.push({ id, at });
+        this.lanternsCollected++;
+      }
+      falls.push(...this.applyGravity());
+    }
     const spawns = this.refill();
     return {
       combo: plan.combo, groups: plan.groups, activations, cleared: [...cleared.values()],
-      created, falls, spawns, scoreGained,
+      created, jellyHit, lanternsCollected, falls, spawns, scoreGained,
     };
+  }
+
+  /** Фонарики на нижней клетке своего столбца. */
+  private lanternsAtExits(): { id: number; at: Pos }[] {
+    const exits: { id: number; at: Pos }[] = [];
+    for (let col = 0; col < this.board.width; col++) {
+      const at = this.board.columnCells(col).at(-1);
+      const piece = at && this.board.get(at);
+      if (at && piece?.special === 'lantern') exits.push({ id: piece.id, at });
+    }
+    return exits;
+  }
+
+  private canSpawnLantern(): boolean {
+    const rule = this.options.lanterns;
+    if (!rule) return false;
+    const onBoard = this.lanternsSpawned - this.lanternsCollected;
+    return this.lanternsSpawned < rule.total && onBoard < rule.maxOnBoard;
+  }
+
+  /** Стартовые фонарики — в верхние клетки случайных столбцов. */
+  private placeStartLanterns(): void {
+    const rule = this.options.lanterns;
+    if (!rule) return;
+    const tops = this.rng.shuffle(Array.from({ length: this.board.width }, (_, col) => this.board.columnCells(col)[0])
+      .filter((p): p is Pos => p !== undefined));
+    for (const at of tops) {
+      if (!this.canSpawnLantern()) break;
+      this.board.set(at, this.board.makeLantern());
+      this.lanternsSpawned++;
+    }
   }
 
   private cellsOfColor(color: Color, exclude: Map<string, Pos> | Set<string>): Pos[] {
@@ -243,17 +383,21 @@ export class Match3Game {
     return best;
   }
 
+  /** Фишки падают вниз по клеткам столбца, пролетая сквозь дыры. */
   private applyGravity(): Fall[] {
     const falls: Fall[] = [];
     for (let col = 0; col < this.board.width; col++) {
-      let target = this.board.height - 1;
-      for (let row = this.board.height - 1; row >= 0; row--) {
-        const piece = this.board.get({ row, col });
+      const cells = this.board.columnCells(col);
+      let target = cells.length - 1;
+      for (let i = cells.length - 1; i >= 0; i--) {
+        const from = cells[i]!;
+        const piece = this.board.get(from);
         if (!piece) continue;
-        if (row !== target) {
-          this.board.set({ row: target, col }, piece);
-          this.board.set({ row, col }, null);
-          falls.push({ id: piece.id, from: { row, col }, to: { row: target, col } });
+        const to = cells[target]!;
+        if (i !== target) {
+          this.board.set(to, piece);
+          this.board.set(from, null);
+          falls.push({ id: piece.id, from, to });
         }
         target--;
       }
@@ -262,26 +406,32 @@ export class Match3Game {
   }
 
   private refill(): Spawn[] {
-    const spawns: Spawn[] = [];
-    for (let col = 0; col < this.board.width; col++) {
-      for (let row = this.board.height - 1; row >= 0; row--) {
-        const at = { row, col };
-        if (this.board.get(at)) continue;
-        const piece = this.board.makePiece(this.board.randomColor(this.rng));
-        this.board.set(at, piece);
-        spawns.push({ piece, at });
+    const empty = this.board.playableCells().filter((p) => !this.board.get(p));
+    const rule = this.options.lanterns;
+    const lanternAt = rule && empty.length > 0 && this.canSpawnLantern() && this.rng.next() < rule.spawnChance
+      ? this.rng.int(empty.length)
+      : -1;
+    // порядок досыпки: по столбцам снизу вверх — как в этапе 1
+    const ordered = [...empty.keys()].sort((i, j) => empty[i]!.col - empty[j]!.col || empty[j]!.row - empty[i]!.row);
+    return ordered.map((i) => {
+      const at = empty[i]!;
+      let piece;
+      if (i === lanternAt) {
+        piece = this.board.makeLantern();
+        this.lanternsSpawned++;
+      } else {
+        piece = this.board.makePiece(this.board.randomColor(this.rng));
       }
-    }
-    return spawns;
+      this.board.set(at, piece);
+      return { piece, at };
+    });
   }
 
   /** Если ходов нет — перемешать; если и это не помогло — собрать поле заново. */
   private ensurePlayable(): GameEvent[] {
     if (findValidSwaps(this.board).length > 0) return [];
 
-    const cells: Pos[] = [];
-    for (let row = 0; row < this.board.height; row++)
-      for (let col = 0; col < this.board.width; col++) cells.push({ row, col });
+    const cells = this.board.playableCells();
     const original = cells.map((p) => this.board.get(p)!);
 
     for (let attempt = 0; attempt < SHUFFLE_ATTEMPTS; attempt++) {
@@ -296,9 +446,12 @@ export class Match3Game {
       }
     }
 
+    // фонарики переживают пересборку на своих местах — иначе цель станет невыполнимой
+    const lanterns = cells.flatMap((at) => (this.board.get(at)?.special === 'lantern' ? [{ at, piece: this.board.get(at)! }] : []));
     for (let attempt = 0; attempt < SHUFFLE_ATTEMPTS; attempt++) {
       this.board.fillWithoutMatches(this.rng);
-      if (findValidSwaps(this.board).length > 0) {
+      for (const { at, piece } of lanterns) this.board.set(at, piece);
+      if (findMatches(this.board).length === 0 && findValidSwaps(this.board).length > 0) {
         return [{ type: 'reset', pieces: cells.map((at) => ({ piece: this.board.get(at)!, at })) }];
       }
     }

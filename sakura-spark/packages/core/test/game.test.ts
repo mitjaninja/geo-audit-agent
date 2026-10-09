@@ -87,7 +87,7 @@ test('piece ids stay unique', () => {
 test('game ends when moves run out', () => {
   const game = new Match3Game({ ...opts, moves: 3 });
   for (let i = 0; i < 3; i++) assert.equal(game.swap(game.validSwaps()[0]!).valid, true);
-  assert.equal(game.status, 'out_of_moves');
+  assert.equal(game.status, 'lost');
   assert.equal(game.swap(game.validSwaps()[0]!).valid, false);
 });
 

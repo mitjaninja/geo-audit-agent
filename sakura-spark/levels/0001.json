@@ -1,0 +1,10 @@
+{
+  "id": 1,
+  "width": 7,
+  "height": 7,
+  "colors": 4,
+  "moves": 20,
+  "difficulty": "normal",
+  "goals": [{ "type": "score", "target": 1500 }],
+  "stars": [1500, 3000, 5000]
+}

@@ -6,6 +6,29 @@ Match-3 в аниме-стиле для Telegram Mini App. Требования 
 
 - `packages/core` — правила match-3 без движка: детерминированный RNG, поле, матчи (включая L/T), каскады, гравитация, досыпка, перемешивание, очки, ходы, реплей.
   Спецфишки и комбо — в `src/specials.ts`, правила описаны в комментариях к `Special` и `ComboKind` в `src/types.ts`.
+  Цели и звёзды — `src/goals.ts`, формат и валидатор уровня — `src/level.ts`.
+- `levels/` — уровни в JSON, имя файла = id с нулями (`0001.json`). Тест проверяет каждый файл.
+
+## Формат уровня
+
+```jsonc
+{
+  "id": 2, "width": 8, "height": 8, "colors": 5, "moves": 25,
+  "difficulty": "normal",              // normal | hard | superHard
+  "shape": ["_######_", "..."],         // # клетка, _ дыра (необязательно)
+  "jelly": ["_000000_", "..."],         // слои желе 0–2 (необязательно)
+  "lanterns": { "total": 2, "maxOnBoard": 2, "spawnChance": 0.3 },
+  "goals": [                            // 1–3 цели, нужны все
+    { "type": "score", "target": 1500 },
+    { "type": "jelly" },
+    { "type": "lanterns", "count": 2 },
+    { "type": "collect", "color": 1, "count": 20 }
+  ],
+  "stars": [1500, 3000, 5000]           // пороги очков; победа = минимум 1 звезда
+}
+```
+
+Сид поля в уровень не входит: сервер выдаёт его на каждую попытку (`gameOptionsFromLevel(level, seed)`).
 
 ## Команды
 

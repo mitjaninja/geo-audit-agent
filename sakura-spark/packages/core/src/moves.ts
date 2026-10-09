@@ -18,7 +18,7 @@ export function swapMakesMatch(board: Board, swap: Swap): boolean {
   if (!board.inBounds(swap.a) || !board.inBounds(swap.b) || !isAdjacent(swap.a, swap.b)) return false;
   const pa = board.get(swap.a);
   const pb = board.get(swap.b);
-  if (!pa || !pb || pa.color === null || pa.color === pb.color) return false;
+  if (!pa || !pb || (pa.color !== null && pa.color === pb.color)) return false;
   swapPieces(board, swap);
   const ok = hasMatchAt(board, swap.a) || hasMatchAt(board, swap.b);
   swapPieces(board, swap);

@@ -1,0 +1,14 @@
+{
+  "id": 3,
+  "width": 8,
+  "height": 8,
+  "colors": 5,
+  "moves": 30,
+  "difficulty": "normal",
+  "lanterns": { "total": 2, "maxOnBoard": 2, "spawnChance": 0.3 },
+  "goals": [
+    { "type": "lanterns", "count": 2 },
+    { "type": "collect", "color": 1, "count": 20 }
+  ],
+  "stars": [2500, 5000, 8000]
+}

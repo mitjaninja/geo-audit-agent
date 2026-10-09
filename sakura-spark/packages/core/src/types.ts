@@ -11,13 +11,14 @@ export const MAX_SIZE = 9;
  *   Горизонтальная четвёрка даёт lineV, вертикальная — lineH (луч бьёт поперёк матча).
  * - bomb — «Бумажная бомба», взрыв 3×3 (L/T-фигура).
  * - rainbow — «Радужный кристалл» (5 в линию), цвета не имеет.
+ * - lantern — фонарик-ингредиент: не матчится и не взрывается, собирается внизу поля.
  */
-export type Special = 'none' | 'lineH' | 'lineV' | 'bomb' | 'rainbow';
+export type Special = 'none' | 'lineH' | 'lineV' | 'bomb' | 'rainbow' | 'lantern';
 
 export interface Piece {
   /** Уникален в пределах партии — клиент по нему ведёт спрайт. */
   readonly id: number;
-  /** null только у радужного кристалла. */
+  /** null у радужного кристалла и фонарика. */
   readonly color: Color | null;
   readonly special: Special;
 }
@@ -36,7 +37,7 @@ export type ComboKind = 'colorBlast' | 'rainbowLine' | 'rainbowBomb' | 'sakuraSt
 /** Сработавшая спецфишка — клиенту для эффекта. */
 export interface Activation {
   readonly at: Pos;
-  readonly special: Exclude<Special, 'none'>;
+  readonly special: 'lineH' | 'lineV' | 'bomb' | 'rainbow';
 }
 
 export interface Pos {
@@ -81,6 +82,10 @@ export interface CascadeStep {
   readonly cleared: Pos[];
   /** Спецфишки, родившиеся из матчей; ставятся на очищенные клетки до гравитации. */
   readonly created: Spawn[];
+  /** Клетки, где снят слой желе. */
+  readonly jellyHit: Pos[];
+  /** Фонарики, дошедшие до низа и собранные (уже после первой гравитации). */
+  readonly lanternsCollected: { readonly id: number; readonly at: Pos }[];
   readonly falls: Fall[];
   readonly spawns: Spawn[];
   readonly scoreGained: number;
@@ -92,7 +97,9 @@ export type GameEvent =
   | { readonly type: 'cascade'; readonly step: CascadeStep; readonly index: number }
   | { readonly type: 'shuffle'; readonly moves: Fall[] }
   /** Перемешать не удалось — поле собрано заново новыми фишками. */
-  | { readonly type: 'reset'; readonly pieces: Spawn[] };
+  | { readonly type: 'reset'; readonly pieces: Spawn[] }
+  /** Победа: оставшиеся ходы превращаются в очки. */
+  | { readonly type: 'finale'; readonly movesLeft: number; readonly bonus: number };
 
 export interface SwapResult {
   readonly valid: boolean;
