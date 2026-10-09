@@ -3,7 +3,7 @@
   "width": 8,
   "height": 8,
   "colors": 5,
-  "moves": 26,
+  "moves": 20,
   "difficulty": "normal",
   "blockers": [
     "........",
@@ -16,7 +16,7 @@
     "........"
   ],
   "goals": [
-    { "type": "collect", "color": 3, "count": 24 }
+    { "type": "collect", "color": 3, "count": 40 }
   ],
-  "stars": [1000, 2000, 3000]
+  "stars": [5600, 9400, 12500]
 }

@@ -20,7 +20,7 @@
     { "from": [3,3], "to": [5,5] },
     { "from": [3,5], "to": [5,3] }
   ],
-  "lanterns": { "total": 2, "maxOnBoard": 2, "spawnChance": 0.3 },
+  "lanterns": { "total": 2, "maxOnBoard": 2, "spawnChance": 0.6 },
   "goals": [
     { "type": "lanterns", "count": 2 }
   ],

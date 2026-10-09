@@ -3,7 +3,7 @@
   "width": 9,
   "height": 9,
   "colors": 5,
-  "moves": 28,
+  "moves": 27,
   "difficulty": "hard",
   "jelly": [
     "000000000",
@@ -30,5 +30,5 @@
   "goals": [
     { "type": "jelly" }
   ],
-  "stars": [1000, 2000, 3000]
+  "stars": [13000, 21700, 26200]
 }
