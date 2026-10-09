@@ -14,8 +14,13 @@ export function swapPieces(board: Board, { a, b }: Swap): void {
 }
 
 /** Свап даёт хотя бы одну тройку. Поле после проверки не меняется. */
+/** Обе клетки существуют, соседние и фишки в них подвижны (не под лианами). */
+export function canSwapCells(board: Board, swap: Swap): boolean {
+  return board.isMovable(swap.a) && board.isMovable(swap.b) && isAdjacent(swap.a, swap.b);
+}
+
 export function swapMakesMatch(board: Board, swap: Swap): boolean {
-  if (!board.inBounds(swap.a) || !board.inBounds(swap.b) || !isAdjacent(swap.a, swap.b)) return false;
+  if (!canSwapCells(board, swap)) return false;
   const pa = board.get(swap.a);
   const pb = board.get(swap.b);
   if (!pa || !pb || (pa.color !== null && pa.color === pb.color)) return false;
@@ -27,7 +32,7 @@ export function swapMakesMatch(board: Board, swap: Swap): boolean {
 
 /** Свап двух спецфишек или радуги с любой фишкой — комбо, матч не нужен. */
 export function swapIsCombo(board: Board, swap: Swap): boolean {
-  if (!board.inBounds(swap.a) || !board.inBounds(swap.b) || !isAdjacent(swap.a, swap.b)) return false;
+  if (!canSwapCells(board, swap)) return false;
   const pa = board.get(swap.a);
   const pb = board.get(swap.b);
   return !!pa && !!pb && comboKind(pa, pb) !== null;

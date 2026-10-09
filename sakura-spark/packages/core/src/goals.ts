@@ -1,14 +1,15 @@
 import type { Color } from './types.ts';
 
 /**
- * Цели уровня (PRD, «Типы уровней»): очки, желе, фонарики, сбор цвета.
- * Туман и таймер — позже (этап 3b и клиент).
+ * Цели уровня (PRD, «Типы уровней»): очки, желе, фонарики, сбор цвета, туман.
+ * Таймер — вместе с клиентом (этап 5).
  */
 export type Goal =
   | { readonly type: 'score'; readonly target: number }
   | { readonly type: 'jelly' }
   | { readonly type: 'lanterns'; readonly count: number }
-  | { readonly type: 'collect'; readonly color: Color; readonly count: number };
+  | { readonly type: 'collect'; readonly color: Color; readonly count: number }
+  | { readonly type: 'fog' };
 
 export interface GoalProgress {
   readonly goal: Goal;

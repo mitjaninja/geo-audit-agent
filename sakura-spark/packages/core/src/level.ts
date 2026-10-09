@@ -1,3 +1,5 @@
+import type { Portal } from './blockers.ts';
+import { Match3Game } from './game.ts';
 import type { GameOptions } from './game.ts';
 import type { Goal, LanternRule } from './goals.ts';
 import { MAX_COLORS, MAX_SIZE, MIN_COLORS } from './types.ts';
@@ -20,6 +22,10 @@ export interface LevelDef {
   readonly shape?: readonly string[];
   readonly jelly?: readonly string[];
   readonly layout?: readonly string[];
+  /** Блокеры: . нет, i/I лёд 1/2, f туман, k/K сундук 1/2, m/M дайфуку 1/2, v лианы. */
+  readonly blockers?: readonly string[];
+  /** В JSON: { "from": [row, col], "to": [row, col] }. */
+  readonly portals?: readonly Portal[];
   readonly lanterns?: LanternRule;
 }
 
@@ -53,7 +59,7 @@ function checkGrid(name: string, v: unknown, width: number, height: number, allo
 export function parseLevel(input: unknown): LevelDef {
   const errors: string[] = [];
   if (!isObj(input)) throw new LevelError(['level must be an object']);
-  const { id, width, height, colors, moves, difficulty, goals, stars, shape, jelly, layout, lanterns } = input;
+  const { id, width, height, colors, moves, difficulty, goals, stars, shape, jelly, layout, lanterns, blockers, portals } = input;
 
   if (!isInt(id, 1, 1_000_000)) errors.push('id: integer ≥ 1');
   if (!isInt(width, 3, MAX_SIZE)) errors.push(`width: integer 3..${MAX_SIZE}`);
@@ -88,6 +94,32 @@ export function parseLevel(input: unknown): LevelDef {
       }
     }));
   }
+  const hasBlockers = checkGrid('blockers', blockers, w, h, /^[.iIfkKmMv_]+$/, errors);
+  let fogCells = 0;
+  if (hasBlockers) {
+    (blockers as string[]).forEach((r, row) => [...r].forEach((ch, col) => {
+      if (ch === 'f') fogCells++;
+      if (ch !== '.' && ch !== '_' && holeAt(row, col)) errors.push(`blockers: blocker on a hole at ${row},${col}`);
+    }));
+  }
+
+  const portalList: Portal[] = [];
+  if (portals !== undefined) {
+    const isCell = (v: unknown): v is [number, number] => Array.isArray(v) && v.length === 2
+      && isInt(v[0], 0, h - 1) && isInt(v[1], 0, w - 1);
+    if (!Array.isArray(portals)) {
+      errors.push('portals: array of { from: [row, col], to: [row, col] }');
+    } else {
+      portals.forEach((pt: unknown, i) => {
+        if (!isObj(pt) || !isCell(pt.from) || !isCell(pt.to)) return errors.push(`portals[${i}]: from/to must be [row, col] on the board`);
+        const [from, to] = [pt.from, pt.to].map(([row, col]) => ({ row, col })) as [Portal['from'], Portal['to']];
+        if (holeAt(from.row, from.col) || holeAt(to.row, to.col)) errors.push(`portals[${i}]: end on a hole`);
+        if (from.col === to.col) errors.push(`portals[${i}]: entrance and exit must be in different columns`);
+        portalList.push({ from, to });
+      });
+    }
+  }
+
   if (hasShape && (shape as string[]).join('').split('').filter((c) => c === '#').length < 9) {
     errors.push('shape: at least 9 playable cells');
   }
@@ -123,19 +155,22 @@ export function parseLevel(input: unknown): LevelDef {
           else if (!lanternRule) errors.push(`goals[${i}]: lanterns goal needs a lanterns rule`);
           else if (lanternRule.total < g.count) errors.push(`goals[${i}]: lanterns.total ${lanternRule.total} < goal ${g.count}`);
           break;
+        case 'fog':
+          if (fogCells === 0) errors.push(`goals[${i}]: fog goal needs fog (f) in blockers`);
+          break;
         case 'collect':
           if (!isInt(g.color, 0, (colors as number) - 1)) errors.push(`goals[${i}].color: 0..${(colors as number) - 1}`);
           if (!isInt(g.count, 1, 500)) errors.push(`goals[${i}].count: integer 1..500`);
           break;
         default:
-          errors.push(`goals[${i}].type: one of score, jelly, lanterns, collect`);
+          errors.push(`goals[${i}].type: one of score, jelly, lanterns, collect, fog`);
       }
     });
     if (lanternRule && !types.has('lanterns')) errors.push('lanterns rule without a lanterns goal');
   }
 
   if (errors.length > 0) throw new LevelError(errors);
-  return {
+  const level: LevelDef = {
     id: id as number, width: w, height: h, colors: colors as number, moves: moves as number,
     difficulty: difficulty as Difficulty,
     goals: (goals as Goal[]).map((g) => ({ ...g })) as Goal[],
@@ -143,8 +178,17 @@ export function parseLevel(input: unknown): LevelDef {
     ...(hasShape ? { shape: [...(shape as string[])] } : {}),
     ...(hasJelly ? { jelly: [...(jelly as string[])] } : {}),
     ...(Array.isArray(layout) ? { layout: [...(layout as string[])] } : {}),
+    ...(hasBlockers ? { blockers: [...(blockers as string[])] } : {}),
+    ...(portalList.length > 0 ? { portals: portalList } : {}),
     ...(lanternRule ? { lanterns: lanternRule } : {}),
   };
+  // то, что видно только на собранном поле: петли порталов, фишки под блокерами в layout и т.п.
+  try {
+    new Match3Game(gameOptionsFromLevel(level, 1));
+  } catch (e) {
+    throw new LevelError([`board: ${(e as Error).message}`]);
+  }
+  return level;
 }
 
 export function gameOptionsFromLevel(level: LevelDef, seed: number): GameOptions {
@@ -154,6 +198,8 @@ export function gameOptionsFromLevel(level: LevelDef, seed: number): GameOptions
     ...(level.shape ? { shape: level.shape } : {}),
     ...(level.jelly ? { jelly: level.jelly } : {}),
     ...(level.layout ? { layout: level.layout } : {}),
+    ...(level.blockers ? { blockers: level.blockers } : {}),
+    ...(level.portals ? { portals: level.portals } : {}),
     ...(level.lanterns ? { lanterns: level.lanterns } : {}),
   };
 }

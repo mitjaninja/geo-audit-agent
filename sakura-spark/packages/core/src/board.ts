@@ -1,3 +1,5 @@
+import type { Blocker, Portal } from './blockers.ts';
+import { occupiesCell } from './blockers.ts';
 import type { Rng } from './rng.ts';
 import type { Color, Grid, Piece, Pos, Special } from './types.ts';
 import { MAX_COLORS, MAX_SIZE, MIN_COLORS } from './types.ts';
@@ -11,6 +13,10 @@ export class Board {
   readonly grid: Grid;
   /** Дыры — клетки вне поля: в них нет фишек, сквозь них падают. */
   private readonly holes: ReadonlySet<string>;
+  private readonly blockers: (Blocker | null)[][];
+  /** Порталы: ключ входа → выход, ключ выхода → вход. */
+  private readonly portalOut = new Map<string, Pos>();
+  private readonly portalIn = new Map<string, Pos>();
   private nextId = 1;
 
   constructor(width: number, height: number, colors: number, holes: readonly Pos[] = []) {
@@ -22,6 +28,99 @@ export class Board {
     this.colors = colors;
     this.grid = Array.from({ length: height }, () => Array<Piece | null>(width).fill(null));
     this.holes = new Set(holes.map(key));
+    this.blockers = Array.from({ length: height }, () => Array<Blocker | null>(width).fill(null));
+  }
+
+  blockerAt(p: Pos): Blocker | null {
+    return this.blockers[p.row]?.[p.col] ?? null;
+  }
+
+  setBlocker(p: Pos, b: Blocker | null): void {
+    if (b && !this.isPlayable(p)) throw new RangeError(`blocker outside the board at ${p.row},${p.col}`);
+    if (occupiesCell(b) && this.get(p)) throw new RangeError(`cell ${p.row},${p.col} still has a piece`);
+    this.blockers[p.row]![p.col] = b;
+  }
+
+  /** В клетке может лежать фишка (не дыра и не занята блокером). */
+  holdsPiece(p: Pos): boolean {
+    return this.isPlayable(p) && !occupiesCell(this.blockerAt(p));
+  }
+
+  /** Фишку можно двигать: свапом, гравитацией, перемешиванием. */
+  isMovable(p: Pos): boolean {
+    return this.holdsPiece(p) && this.blockerAt(p)?.kind !== 'vines';
+  }
+
+  addPortal({ from, to }: Portal): void {
+    if (!this.isPlayable(from) || !this.isPlayable(to)) throw new RangeError('portal ends must be on the board');
+    if (this.portalOut.has(key(from)) || this.portalIn.has(key(to))) throw new RangeError('portal cell already used');
+    this.portalOut.set(key(from), to);
+    this.portalIn.set(key(to), from);
+    // путь из выхода не должен вернуться во вход — иначе фишки падали бы по кругу
+    const seen = new Set<string>();
+    for (let p: Pos | null = to; p; p = this.below(p)) {
+      if (seen.has(key(p))) {
+        this.portalOut.delete(key(from));
+        this.portalIn.delete(key(to));
+        throw new RangeError(`portal ${from.row},${from.col} → ${to.row},${to.col} makes a loop`);
+      }
+      seen.add(key(p));
+    }
+  }
+
+  /** Следующая клетка по пути падения: через портал или вниз, пропуская дыры. */
+  private below(p: Pos): Pos | null {
+    const out = this.portalOut.get(key(p));
+    if (out) return out;
+    for (let row = p.row + 1; row < this.height; row++) {
+      const q = { row, col: p.col };
+      if (this.isHole(q)) continue;
+      // в выход портала сверху ничего не падает — только из входа
+      return this.portalIn.has(key(q)) ? null : q;
+    }
+    return null;
+  }
+
+  /**
+   * Пути падения: от верхней клетки к нижней, с переходами через порталы.
+   * Возвращаются только подвижные клетки — сквозь блокеры и лианы фишки пролетают.
+   */
+  fallPaths(): Pos[][] {
+    const hasPred = new Set<string>();
+    for (const p of this.playableCells()) {
+      const b = this.below(p);
+      if (b) hasPred.add(key(b));
+    }
+    const paths: Pos[][] = [];
+    for (const start of this.playableCells()) {
+      if (hasPred.has(key(start))) continue;
+      const path: Pos[] = [];
+      for (let p: Pos | null = start; p; p = this.below(p)) path.push(p);
+      paths.push(path.filter((q) => this.isMovable(q)));
+    }
+    return paths;
+  }
+
+  /** Низ поля для фонариков: путь падения заканчивается в самой нижней клетке столбца. */
+  lanternExits(): Pos[] {
+    const exits: Pos[] = [];
+    const hasPred = new Set<string>();
+    for (const p of this.playableCells()) {
+      const b = this.below(p);
+      if (b) hasPred.add(key(b));
+    }
+    for (const start of this.playableCells()) {
+      if (hasPred.has(key(start))) continue;
+      let last = start;
+      let lastMovable: Pos | null = null;
+      for (let p: Pos | null = start; p; p = this.below(p)) {
+        last = p;
+        if (this.isMovable(p)) lastMovable = p;
+      }
+      const bottom = this.columnCells(last.col).at(-1);
+      if (lastMovable && bottom && key(bottom) === key(last)) exits.push(lastMovable);
+    }
+    return exits;
   }
 
   inBounds(p: Pos): boolean {
@@ -59,6 +158,7 @@ export class Board {
     const row = this.grid[p.row];
     if (!row || p.col < 0 || p.col >= this.width) throw new RangeError(`out of bounds ${p.row},${p.col}`);
     if (piece && this.isHole(p)) throw new RangeError(`hole at ${p.row},${p.col}`);
+    if (piece && occupiesCell(this.blockerAt(p))) throw new RangeError(`blocker at ${p.row},${p.col}`);
     row[p.col] = piece;
   }
 
@@ -91,6 +191,7 @@ export class Board {
   /** Заполняет поле так, чтобы на старте не было готовых троек. */
   fillWithoutMatches(rng: Rng): void {
     for (const { row, col } of this.playableCells()) {
+      if (!this.holdsPiece({ row, col })) continue;
       const banned = new Set<Color>();
       const l1 = this.colorAt(row, col - 1);
       if (l1 !== undefined && l1 === this.colorAt(row, col - 2)) banned.add(l1);
@@ -102,10 +203,11 @@ export class Board {
     }
   }
 
-  /** Строки для отладки и тестов. Формат как у fromStrings, но тип луча/бомбы не виден. */
+  /** Строки для отладки и тестов. Формат как у fromStrings, но тип луча/бомбы не виден; # — клетка под блокером. */
   toStrings(): string[] {
     return this.grid.map((r, row) => r.map((p, col) => {
       if (this.isHole({ row, col })) return '_';
+      if (occupiesCell(this.blockerAt({ row, col }))) return '#';
       if (!p) return '.';
       if (p.special === 'rainbow') return '*';
       if (p.special === 'lantern') return 'L';

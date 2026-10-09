@@ -1,3 +1,5 @@
+import type { BlockerKind } from './blockers.ts';
+
 /** Цвет фишки: 0 звезда, 1 сердце, 2 луна, 3 лепесток, 4 капля, 5 лист. */
 export type Color = 0 | 1 | 2 | 3 | 4 | 5;
 
@@ -82,6 +84,8 @@ export interface CascadeStep {
   readonly cleared: Pos[];
   /** Спецфишки, родившиеся из матчей; ставятся на очищенные клетки до гравитации. */
   readonly created: Spawn[];
+  /** Блокеры, получившие удар; layersLeft 0 — блокер снят. */
+  readonly blockersHit: { readonly at: Pos; readonly kind: BlockerKind; readonly layersLeft: number }[];
   /** Клетки, где снят слой желе. */
   readonly jellyHit: Pos[];
   /** Фонарики, дошедшие до низа и собранные (уже после первой гравитации). */
@@ -98,6 +102,8 @@ export type GameEvent =
   | { readonly type: 'shuffle'; readonly moves: Fall[] }
   /** Перемешать не удалось — поле собрано заново новыми фишками. */
   | { readonly type: 'reset'; readonly pieces: Spawn[] }
+  /** За ход не снят ни один туман — он поглотил соседнюю фишку. */
+  | { readonly type: 'fogSpread'; readonly from: Pos; readonly to: Pos; readonly pieceId: number }
   /** Победа: оставшиеся ходы превращаются в очки. */
   | { readonly type: 'finale'; readonly movesLeft: number; readonly bonus: number };
 

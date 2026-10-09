@@ -38,7 +38,7 @@ test('goal consistency checks', () => {
   assert.match(errorsOf({ ...valid, goals: [{ type: 'lanterns', count: 2 }] }).join(), /lanterns rule/);
   assert.match(errorsOf({ ...valid, goals: [{ type: 'collect', color: 5, count: 10 }] }).join(), /color/);
   assert.match(errorsOf({ ...valid, goals: [] }).join(), /1\.\.3/);
-  assert.match(errorsOf({ ...valid, goals: [{ type: 'fog' }] }).join(), /type/);
+  assert.match(errorsOf({ ...valid, goals: [{ type: 'timer' }] }).join(), /type/);
   assert.match(errorsOf({ ...valid, goals: [{ type: 'score', target: 1 }, { type: 'score', target: 2 }] }).join(), /duplicate/);
   assert.match(errorsOf({
     ...valid, lanterns: { total: 1, maxOnBoard: 1, spawnChance: 0.5 }, goals: [{ type: 'lanterns', count: 3 }],

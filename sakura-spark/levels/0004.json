@@ -1,0 +1,20 @@
+{
+  "id": 4,
+  "width": 8,
+  "height": 8,
+  "colors": 5,
+  "moves": 26,
+  "difficulty": "normal",
+  "blockers": [
+    "........",
+    "........",
+    "..v..v..",
+    ".iiiiii.",
+    ".iIiiIi.",
+    "..v..v..",
+    "........",
+    "........"
+  ],
+  "goals": [{ "type": "collect", "color": 2, "count": 18 }],
+  "stars": [2500, 5000, 8000]
+}
