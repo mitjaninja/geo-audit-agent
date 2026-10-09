@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 /** Минимальный клиент Bot API через fetch. fetchImpl подменяется в тестах — сети в тестах нет. */
 export class BotApi {
   constructor(
@@ -52,6 +54,14 @@ export async function handleUpdate(update: unknown, api: BotApi, webAppUrl: stri
   });
 }
 
+/**
+ * Токен для заголовка X-Telegram-Bot-Api-Secret-Token. Telegram разрешает в нём только A-Z, a-z, 0-9, _ и -,
+ * а хостинги генерируют секреты с + / = — поэтому в Telegram уходит SHA-256 секрета в hex.
+ */
+export function webhookToken(secret: string): string {
+  return createHash('sha256').update(secret).digest('hex');
+}
+
 /** Профиль бота: описание, короткое описание, команды. Не зависит от адреса сервера. */
 export async function setupProfile(api: BotApi): Promise<void> {
   await api.call('setMyDescription', { description: BOT_TEXT.description });
@@ -64,7 +74,7 @@ export async function setupBot(api: BotApi, publicUrl: string, webhookSecret: st
   const base = publicUrl.replace(/\/$/, '');
   await api.call('setWebhook', {
     url: `${base}/telegram/webhook`,
-    secret_token: webhookSecret,
+    secret_token: webhookToken(webhookSecret),
     allowed_updates: ['message', 'inline_query', 'chosen_inline_result', 'callback_query'],
     drop_pending_updates: true,
   });

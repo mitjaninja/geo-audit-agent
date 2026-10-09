@@ -7,7 +7,7 @@ import { after, before, beforeEach, test } from 'node:test';
 import { gameOptionsFromLevel, Match3Game, parseLevel } from '@sakura/core';
 import type { LevelDef, Swap } from '@sakura/core';
 import { signInitData } from '../src/auth.ts';
-import { BotApi } from '../src/bot.ts';
+import { BotApi, webhookToken } from '../src/bot.ts';
 import { createApp } from '../src/http.ts';
 import { loadLevels } from '../src/levels.ts';
 import { LIFE_REGEN_MS } from '../src/lives.ts';
@@ -15,7 +15,8 @@ import { GameService, TIME_GRACE_MS } from '../src/service.ts';
 import { SqliteStore } from '../src/store.ts';
 
 const TOKEN = '777:test';
-const SECRET = 'hook-secret';
+// как у Render generateValue: base64 с символами, которые Telegram в secret_token не принимает
+const SECRET = 'Hk+9/aZ=';
 const base = { width: 6, height: 6, colors: 5, difficulty: 'normal', stars: [1, 2, 3] };
 const LEVELS = new Map<number, LevelDef>([
   [1, parseLevel({ ...base, id: 1, moves: 10, goals: [{ type: 'score', target: 1 }] })],
@@ -226,14 +227,16 @@ test('static client: SPA fallback, cache headers, no path traversal', async () =
 test('bot webhook: secret required; /start answers with a web_app button', async () => {
   const update = { message: { chat: { id: 5, type: 'private' }, from: { first_name: 'Мика' }, text: '/start' } };
   assert.equal((await call('POST', '/telegram/webhook', update, { 'x-telegram-bot-api-secret-token': 'wrong' })).status, 401);
-  const ok = await call('POST', '/telegram/webhook', update, { 'x-telegram-bot-api-secret-token': SECRET });
+  assert.equal((await call('POST', '/telegram/webhook', update, { 'x-telegram-bot-api-secret-token': SECRET })).status, 401,
+    'the raw secret is not the header value');
+  const ok = await call('POST', '/telegram/webhook', update, { 'x-telegram-bot-api-secret-token': webhookToken(SECRET) });
   assert.equal(ok.status, 200);
   await new Promise((r) => setTimeout(r, 20));
   assert.equal(botCalls.length, 1);
   assert.equal(botCalls[0]!.method, 'sendMessage');
   assert.equal(botCalls[0]!.params.chat_id, 5);
   assert.deepEqual((botCalls[0]!.params.reply_markup as any).inline_keyboard[0][0].web_app, { url: 'https://game.example/' });
-  await call('POST', '/telegram/webhook', { message: { chat: { id: 6, type: 'group' }, text: '/start' } }, { 'x-telegram-bot-api-secret-token': SECRET });
+  await call('POST', '/telegram/webhook', { message: { chat: { id: 6, type: 'group' }, text: '/start' } }, { 'x-telegram-bot-api-secret-token': webhookToken(SECRET) });
   await new Promise((r) => setTimeout(r, 20));
   assert.equal(botCalls.length, 1, 'groups are ignored for now');
 });
@@ -257,9 +260,10 @@ test('bot profile and setup: limits respected, webhook and menu button point to 
   assert.ok(BOT_TEXT.shortDescription.length <= 120);
   const api = new BotApi(TOKEN, fakeFetch);
   await setupProfile(api);
-  await setupBot(api, 'https://sakura.example/', 's3cret');
+  await setupBot(api, 'https://sakura.example/', 's3cret+/=');
   assert.deepEqual(botCalls.map((c) => c.method), ['setMyDescription', 'setMyShortDescription', 'setMyCommands', 'setWebhook', 'setChatMenuButton']);
   assert.equal(botCalls[3]!.params.url, 'https://sakura.example/telegram/webhook');
-  assert.equal(botCalls[3]!.params.secret_token, 's3cret');
+  assert.match(String(botCalls[3]!.params.secret_token), /^[A-Za-z0-9_-]{1,256}$/, 'Telegram-legal characters only');
+  assert.equal(botCalls[3]!.params.secret_token, webhookToken('s3cret+/='));
   assert.deepEqual((botCalls[4]!.params.menu_button as any).web_app, { url: 'https://sakura.example/' });
 });

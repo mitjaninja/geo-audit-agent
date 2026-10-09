@@ -5,7 +5,7 @@ import { extname, join, resolve, sep } from 'node:path';
 import { timingSafeEqual } from 'node:crypto';
 import { validateInitData } from './auth.ts';
 import type { TelegramUser } from './auth.ts';
-import { handleUpdate } from './bot.ts';
+import { handleUpdate, webhookToken } from './bot.ts';
 import type { BotApi } from './bot.ts';
 import { ServiceError } from './service.ts';
 import type { GameService } from './service.ts';
@@ -83,7 +83,7 @@ export function createApp(deps: HttpDeps): Server {
 
     if (method === 'POST' && path === '/telegram/webhook') {
       const secret = String(req.headers['x-telegram-bot-api-secret-token'] ?? '');
-      if (!deps.bot || !deps.bot.secret || !safeEqual(secret, deps.bot.secret)) throw new HttpError(401, 'unauthorized');
+      if (!deps.bot || !deps.bot.secret || !safeEqual(secret, webhookToken(deps.bot.secret))) throw new HttpError(401, 'unauthorized');
       const update = await readJson(req);
       // Telegram ждёт быстрый 200; ошибку бота логируем, но апдейт не переотправляем
       handleUpdate(update, deps.bot.api, deps.bot.webAppUrl).catch((e) => log(`bot: ${String(e)}`));
