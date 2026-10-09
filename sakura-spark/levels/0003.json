@@ -1,14 +1,15 @@
 {
   "id": 3,
-  "width": 8,
-  "height": 8,
-  "colors": 5,
-  "moves": 30,
+  "width": 7,
+  "height": 7,
+  "colors": 4,
+  "moves": 12,
   "difficulty": "normal",
-  "lanterns": { "total": 2, "maxOnBoard": 2, "spawnChance": 0.3 },
   "goals": [
-    { "type": "lanterns", "count": 2 },
-    { "type": "collect", "color": 1, "count": 20 }
+    { "type": "collect", "color": 0, "count": 30 }
   ],
-  "stars": [2500, 5000, 8000]
+  "intro": [
+    { "speaker": "mika", "text": "Храму нужны звёзды. Собери их — счётчик сверху покажет, сколько осталось." }
+  ],
+  "stars": [4600, 7700, 10500]
 }

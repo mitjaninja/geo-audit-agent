@@ -3,18 +3,13 @@
   "width": 8,
   "height": 8,
   "colors": 5,
-  "moves": 26,
+  "moves": 16,
   "difficulty": "normal",
-  "blockers": [
-    "........",
-    "........",
-    "..v..v..",
-    ".iiiiii.",
-    ".iIiiIi.",
-    "..v..v..",
-    "........",
-    "........"
+  "goals": [
+    { "type": "score", "target": 4000 }
   ],
-  "goals": [{ "type": "collect", "color": 2, "count": 18 }],
-  "stars": [2500, 5000, 8000]
+  "intro": [
+    { "speaker": "pon", "text": "Собери фигуру буквой Г или Т — выйдет Бумажная бомба. Бум — и квадрат 3×3 чист!" }
+  ],
+  "stars": [4000, 5200, 6400]
 }

@@ -1,0 +1,16 @@
+{
+  "id": 12,
+  "width": 8,
+  "height": 8,
+  "colors": 5,
+  "moves": 300,
+  "timeLimit": 90,
+  "difficulty": "normal",
+  "goals": [
+    { "type": "score", "target": 6800 }
+  ],
+  "intro": [
+    { "speaker": "ren", "text": "Фестиваль не ждёт! Здесь нет счёта ходов — только 90 секунд. Успеешь набрать очки?" }
+  ],
+  "stars": [6800, 12500, 17400]
+}

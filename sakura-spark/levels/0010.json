@@ -1,0 +1,16 @@
+{
+  "id": 10,
+  "width": 8,
+  "height": 8,
+  "colors": 5,
+  "moves": 44,
+  "difficulty": "normal",
+  "lanterns": { "total": 2, "maxOnBoard": 2, "spawnChance": 0.6 },
+  "goals": [
+    { "type": "lanterns", "count": 2 }
+  ],
+  "intro": [
+    { "speaker": "mika", "text": "Наши фонарики! Их нельзя взорвать — опусти их на самый низ, убирая кристаллы под ними." }
+  ],
+  "stars": [6800, 11400, 15000]
+}
