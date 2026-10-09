@@ -14,8 +14,8 @@ function scanRuns(board: Board): Run[] {
       for (let i = 1; i <= inner; i++) {
         const prev = board.get(at(o, start));
         const cur = i < inner ? board.get(at(o, i)) : null;
-        if (cur && prev && cur.color === prev.color) continue;
-        if (prev && i - start >= 3) {
+        if (cur && prev && prev.color !== null && cur.color === prev.color) continue;
+        if (prev && prev.color !== null && i - start >= 3) {
           const cells: Pos[] = [];
           for (let k = start; k < i; k++) cells.push(at(o, k));
           runs.push({ color: prev.color, cells });
@@ -73,7 +73,7 @@ export function findMatches(board: Board): MatchGroup[] {
 /** Есть ли тройка, проходящая через клетку p (быстрая проверка для поиска ходов). */
 export function hasMatchAt(board: Board, p: Pos): boolean {
   const piece = board.get(p);
-  if (!piece) return false;
+  if (!piece || piece.color === null) return false;
   const count = (dr: number, dc: number) => {
     let n = 0;
     for (let r = p.row + dr, c = p.col + dc; board.colorAt(r, c) === piece.color; r += dr, c += dc) n++;

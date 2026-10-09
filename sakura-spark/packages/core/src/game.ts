@@ -1,10 +1,30 @@
 import { Board } from './board.ts';
 import { findMatches } from './match.ts';
-import { findValidSwaps, isAdjacent, swapMakesMatch, swapPieces } from './moves.ts';
+import { findValidSwaps, isAdjacent, isValidSwap, swapPieces } from './moves.ts';
 import { Rng } from './rng.ts';
-import type { CascadeStep, Fall, GameEvent, Pos, Spawn, Swap, SwapResult } from './types.ts';
+import {
+  allCells, anchorFor, blastArea, colCells, comboKind, rowCells, specialForGroup, squareCells,
+} from './specials.ts';
+import type { MadeSpecial } from './specials.ts';
+import type {
+  Activation, Color, ComboKind, CascadeStep, Fall, GameEvent, MatchGroup, Pos, Spawn, Swap, SwapResult,
+} from './types.ts';
 
 export const POINTS_PER_PIECE = 20;
+/** Бонус за рождение спецфишки, не умножается на каскад. */
+export const SPECIAL_BONUS: Readonly<Record<MadeSpecial, number>> = { lineH: 60, lineV: 60, bomb: 100, rainbow: 200 };
+
+/** Что снимает шаг: матчи + стартовые цели (комбо) + клетки, «съеденные» комбо без срабатывания. */
+interface StepPlan {
+  readonly combo: ComboKind | null;
+  readonly groups: MatchGroup[];
+  readonly targets: Pos[];
+  readonly consumed: Pos[];
+  /** Клетки хода: здесь предпочтительно рождаются спецфишки. */
+  readonly preferred: Pos[];
+}
+
+const key = (p: Pos) => `${p.row},${p.col}`;
 /** Предохранитель от бесконечного каскада при ошибке в правилах. */
 const MAX_CASCADES = 100;
 const SHUFFLE_ATTEMPTS = 50;
@@ -15,6 +35,8 @@ export interface GameOptions {
   readonly colors: number;
   readonly moves: number;
   readonly seed: number;
+  /** Заданная расстановка (формат Board.fromStrings). Без готовых матчей. */
+  readonly layout?: readonly string[];
 }
 
 export type GameStatus = 'playing' | 'out_of_moves';
@@ -35,9 +57,18 @@ export class Match3Game {
     if (!Number.isInteger(options.moves) || options.moves < 1) throw new RangeError(`moves ${options.moves}`);
     this.options = options;
     this.rng = new Rng(options.seed);
-    this.board = new Board(options.width, options.height, options.colors);
     this._movesLeft = options.moves;
-    this.board.fillWithoutMatches(this.rng);
+    if (options.layout) {
+      this.board = Board.fromStrings([...options.layout], options.colors);
+      if (this.board.width !== options.width || this.board.height !== options.height) {
+        throw new Error(`layout is ${this.board.width}x${this.board.height}, expected ${options.width}x${options.height}`);
+      }
+      if (this.board.toStrings().some((r) => r.includes('.'))) throw new Error('layout has empty cells');
+      if (findMatches(this.board).length > 0) throw new Error('layout has ready matches');
+    } else {
+      this.board = new Board(options.width, options.height, options.colors);
+      this.board.fillWithoutMatches(this.rng);
+    }
     this.ensurePlayable();
   }
 
@@ -75,7 +106,7 @@ export class Match3Game {
    */
   swap(swap: Swap): SwapResult {
     if (this.status !== 'playing') return { valid: false, events: [] };
-    if (!swapMakesMatch(this.board, swap)) {
+    if (!isValidSwap(this.board, swap)) {
       const adjacent = this.board.inBounds(swap.a) && this.board.inBounds(swap.b) && isAdjacent(swap.a, swap.b);
       return { valid: false, events: adjacent ? [{ type: 'swap', swap }, { type: 'swapBack', swap }] : [] };
     }
@@ -85,30 +116,131 @@ export class Match3Game {
     this._movesLeft--;
     this._history.push(swap);
 
+    const combo = this.comboPlan(swap);
     for (let index = 0; index < MAX_CASCADES; index++) {
-      const step = this.resolveOnce(index);
-      if (!step) break;
-      events.push({ type: 'cascade', step, index });
+      const plan: StepPlan | null = index === 0 && combo
+        ? combo
+        : this.matchPlan(index === 0 ? [swap.b, swap.a] : []);
+      if (!plan) break;
+      events.push({ type: 'cascade', step: this.resolveStep(index, plan), index });
     }
     events.push(...this.ensurePlayable());
     return { valid: true, events };
   }
 
-  /** Один шаг каскада: снять матчи, уронить фишки, досыпать сверху. */
-  private resolveOnce(index: number): CascadeStep | null {
+  private matchPlan(preferred: Pos[]): StepPlan | null {
     const groups = findMatches(this.board);
     if (groups.length === 0) return null;
+    return { combo: null, groups, targets: [], consumed: [], preferred };
+  }
 
+  /** План комбо после свапа; фишка, которую тянули, теперь в b. */
+  private comboPlan({ a, b }: Swap): StepPlan | null {
+    const pa = this.board.get(a)!;
+    const pb = this.board.get(b)!;
+    const kind = comboKind(pa, pb);
+    if (!kind) return null;
+    const plan = (targets: Pos[], consumed: Pos[]): StepPlan => ({ combo: kind, groups: [], targets, consumed, preferred: [] });
+
+    switch (kind) {
+      case 'sakuraStorm':
+        return plan(allCells(this.board), [a, b]);
+      case 'doubleLine':
+        return plan([...rowCells(this.board, b.row), ...colCells(this.board, b.col)], [a, b]);
+      case 'crossFlash': {
+        const targets: Pos[] = [];
+        for (let d = -1; d <= 1; d++) targets.push(...rowCells(this.board, b.row + d), ...colCells(this.board, b.col + d));
+        return plan(targets, [a, b]);
+      }
+      case 'megaBomb':
+        return plan(squareCells(this.board, b, 2), [a, b]);
+      default: {
+        const [rainbowAt, other] = pa.special === 'rainbow' ? [a, pb] : [b, pa];
+        const color = other.color!;
+        const cells = this.cellsOfColor(color, new Set());
+        if (kind === 'rainbowLine' || kind === 'rainbowBomb') {
+          for (const p of cells) {
+            const piece = this.board.get(p)!;
+            if (piece.special !== 'none') continue;
+            const special = kind === 'rainbowBomb' ? 'bomb' : this.rng.int(2) === 0 ? 'lineH' : 'lineV';
+            this.board.set(p, Board.withSpecial(piece, special));
+          }
+        }
+        return plan(cells, [rainbowAt]);
+      }
+    }
+  }
+
+  /**
+   * Один шаг каскада: снять клетки плана, по цепочке сработать спецфишкам,
+   * поставить новые спецфишки, уронить и досыпать.
+   */
+  private resolveStep(index: number, plan: StepPlan): CascadeStep {
     const cleared = new Map<string, Pos>();
-    for (const g of groups) for (const p of g.cells) cleared.set(`${p.row},${p.col}`, p);
-    for (const p of cleared.values()) this.board.set(p, null);
+    for (const p of plan.consumed) cleared.set(key(p), p);
 
-    const scoreGained = cleared.size * POINTS_PER_PIECE * (index + 1);
+    const toCreate: { at: Pos; special: MadeSpecial; color: Color }[] = [];
+    for (const g of plan.groups) {
+      const special = specialForGroup(g);
+      if (!special) continue;
+      const at = anchorFor(g, plan.preferred);
+      if (!toCreate.some((c) => key(c.at) === key(at))) toCreate.push({ at, special, color: g.color });
+    }
+
+    const activations: Activation[] = [];
+    const queue: Pos[] = [...plan.groups.flatMap((g) => g.cells), ...plan.targets];
+    for (let i = 0; i < queue.length; i++) {
+      const p = queue[i]!;
+      if (cleared.has(key(p))) continue;
+      const piece = this.board.get(p);
+      if (!piece) continue;
+      cleared.set(key(p), p);
+      if (piece.special === 'none') continue;
+      activations.push({ at: p, special: piece.special });
+      if (piece.special === 'rainbow') {
+        const color = this.mostCommonColor(cleared);
+        if (color !== null) queue.push(...this.cellsOfColor(color, cleared));
+      } else {
+        queue.push(...blastArea(this.board, p, piece.special));
+      }
+    }
+
+    for (const p of cleared.values()) this.board.set(p, null);
+    const created: Spawn[] = toCreate.map(({ at, special, color }) => {
+      const piece = special === 'rainbow' ? this.board.makeRainbow() : this.board.makePiece(color, special);
+      this.board.set(at, piece);
+      return { piece, at };
+    });
+
+    const bonus = created.reduce((sum, c) => sum + SPECIAL_BONUS[c.piece.special as MadeSpecial], 0);
+    const scoreGained = cleared.size * POINTS_PER_PIECE * (index + 1) + bonus;
     this._score += scoreGained;
 
     const falls = this.applyGravity();
     const spawns = this.refill();
-    return { groups, cleared: [...cleared.values()], falls, spawns, scoreGained };
+    return {
+      combo: plan.combo, groups: plan.groups, activations, cleared: [...cleared.values()],
+      created, falls, spawns, scoreGained,
+    };
+  }
+
+  private cellsOfColor(color: Color, exclude: Map<string, Pos> | Set<string>): Pos[] {
+    return allCells(this.board).filter((p) => !exclude.has(key(p)) && this.board.get(p)?.color === color);
+  }
+
+  /** Цвет для радуги, задетой взрывом: самый частый среди оставшихся, при равенстве — меньший. */
+  private mostCommonColor(exclude: Map<string, Pos>): Color | null {
+    const counts = new Map<Color, number>();
+    for (const p of allCells(this.board)) {
+      const c = this.board.get(p)?.color;
+      if (c === undefined || c === null || exclude.has(key(p))) continue;
+      counts.set(c, (counts.get(c) ?? 0) + 1);
+    }
+    let best: Color | null = null;
+    for (const [c, n] of counts) {
+      if (best === null || n > counts.get(best)! || (n === counts.get(best)! && c < best)) best = c;
+    }
+    return best;
   }
 
   private applyGravity(): Fall[] {

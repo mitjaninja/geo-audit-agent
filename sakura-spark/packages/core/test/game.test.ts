@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { findMatches, Match3Game, POINTS_PER_PIECE, Rng } from '../src/index.ts';
+import { findMatches, Match3Game, POINTS_PER_PIECE, Rng, SPECIAL_BONUS } from '../src/index.ts';
 import type { GameOptions } from '../src/index.ts';
 
 const opts: GameOptions = { width: 9, height: 9, colors: 5, moves: 20, seed: 2026 };
@@ -65,8 +65,9 @@ test('valid swap: spends move, scores, leaves healthy board, events are consiste
   assert.ok(cascades.length >= 1);
   cascades.forEach((c, i) => {
     assert.equal(c.index, i);
-    assert.equal(c.step.scoreGained, c.step.cleared.length * POINTS_PER_PIECE * (i + 1));
-    assert.equal(c.step.spawns.length, c.step.cleared.length, 'every cleared cell is refilled');
+    const bonus = c.step.created.reduce((sum, x) => sum + SPECIAL_BONUS[x.piece.special as 'bomb'], 0);
+    assert.equal(c.step.scoreGained, c.step.cleared.length * POINTS_PER_PIECE * (i + 1) + bonus);
+    assert.equal(c.step.spawns.length, c.step.cleared.length - c.step.created.length, 'every cleared cell is refilled');
     for (const f of c.step.falls) {
       assert.equal(f.from.col, f.to.col);
       assert.ok(f.to.row > f.from.row, 'pieces fall down');

@@ -1,5 +1,5 @@
 import type { Rng } from './rng.ts';
-import type { Color, Grid, Piece, Pos } from './types.ts';
+import type { Color, Grid, Piece, Pos, Special } from './types.ts';
 import { MAX_COLORS, MAX_SIZE, MIN_COLORS } from './types.ts';
 
 export class Board {
@@ -33,12 +33,22 @@ export class Board {
     row[p.col] = piece;
   }
 
+  /** Цвет для поиска матчей; у радуги и пустой клетки — undefined. */
   colorAt(row: number, col: number): Color | undefined {
-    return this.grid[row]?.[col]?.color;
+    return this.grid[row]?.[col]?.color ?? undefined;
   }
 
-  makePiece(color: Color): Piece {
-    return { id: this.nextId++, color };
+  makePiece(color: Color, special: Exclude<Special, 'rainbow'> = 'none'): Piece {
+    return { id: this.nextId++, color, special };
+  }
+
+  makeRainbow(): Piece {
+    return { id: this.nextId++, color: null, special: 'rainbow' };
+  }
+
+  /** Та же фишка (тот же id) с другим типом — для превращений в комбо с радугой. */
+  static withSpecial(piece: Piece, special: 'lineH' | 'lineV' | 'bomb'): Piece {
+    return { ...piece, special };
   }
 
   randomColor(rng: Rng): Color {
@@ -61,23 +71,33 @@ export class Board {
     }
   }
 
-  /** Строки для отладки и тестов: цифра — цвет, точка — пусто. */
+  /** Строки для отладки и тестов: цифра — цвет, * — радуга, точка — пусто. Тип луча/бомбы не виден. */
   toStrings(): string[] {
-    return this.grid.map((r) => r.map((p) => (p ? String(p.color) : '.')).join(''));
+    return this.grid.map((r) => r.map((p) => (p ? (p.color === null ? '*' : String(p.color)) : '.')).join(''));
   }
 
-  /** Поле из строк вида ['012', '120', ...] — для тестов и редактора уровней. */
+  /**
+   * Поле из строк — для тестов и редактора уровней.
+   * Цифра — обычная фишка; после цифры можно указать тип: h (lineH), v (lineV), b (bomb).
+   * * — радуга, точка — пусто. Пример: ['01h2', '1*20'].
+   */
   static fromStrings(rows: string[], colors = MAX_COLORS): Board {
-    const height = rows.length;
-    const width = rows[0]?.length ?? 0;
-    const board = new Board(width, height, colors);
+    const tokens = rows.map((line) => line.match(/\d[hvb]?|\*|\./g) ?? []);
     rows.forEach((line, row) => {
-      if (line.length !== width) throw new Error(`row ${row} has length ${line.length}, expected ${width}`);
-      [...line].forEach((ch, col) => {
-        if (ch === '.') return;
-        const c = Number(ch);
-        if (!Number.isInteger(c) || c < 0 || c >= colors) throw new Error(`bad color '${ch}' at ${row},${col}`);
-        board.set({ row, col }, board.makePiece(c as Color));
+      if (tokens[row]!.join('') !== line) throw new Error(`row ${row}: bad cell syntax '${line}'`);
+    });
+    const height = rows.length;
+    const width = tokens[0]?.length ?? 0;
+    const board = new Board(width, height, colors);
+    tokens.forEach((cells, row) => {
+      if (cells.length !== width) throw new Error(`row ${row} has ${cells.length} cells, expected ${width}`);
+      cells.forEach((tok, col) => {
+        if (tok === '.') return;
+        if (tok === '*') return board.set({ row, col }, board.makeRainbow());
+        const c = Number(tok[0]);
+        if (c >= colors) throw new Error(`bad color '${tok}' at ${row},${col}`);
+        const special = ({ h: 'lineH', v: 'lineV', b: 'bomb' } as const)[tok[1] as 'h' | 'v' | 'b'] ?? 'none';
+        board.set({ row, col }, board.makePiece(c as Color, special));
       });
     });
     return board;
