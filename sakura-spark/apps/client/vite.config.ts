@@ -9,5 +9,6 @@ export default defineConfig({
     rollupOptions: { output: { manualChunks: { phaser: ['phaser'] } } },
     chunkSizeWarningLimit: 1600,
   },
-  server: { host: true },
+  // в разработке API — на сервере (npm run server:dev), Vite проксирует к нему
+  server: { host: true, proxy: { '/api': 'http://localhost:8787' } },
 });

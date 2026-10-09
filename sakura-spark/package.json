@@ -12,7 +12,10 @@
     "autotest": "npm run -s autotest -w @sakura/sim --",
     "dev": "npm run dev -w @sakura/client",
     "build": "npm run build -w @sakura/client",
-    "smoke": "npm run smoke -w @sakura/client"
+    "smoke": "npm run smoke -w @sakura/client",
+    "server": "npm start -w @sakura/server",
+    "server:dev": "DEV_AUTH=1 npm start -w @sakura/server",
+    "setup-bot": "npm run setup-bot -w @sakura/server"
   },
   "engines": {
     "node": ">=20"

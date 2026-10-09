@@ -1,0 +1,252 @@
+import assert from 'node:assert/strict';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import type { AddressInfo } from 'node:net';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { after, before, beforeEach, test } from 'node:test';
+import { gameOptionsFromLevel, Match3Game, parseLevel } from '@sakura/core';
+import type { LevelDef, Swap } from '@sakura/core';
+import { signInitData } from '../src/auth.ts';
+import { BotApi } from '../src/bot.ts';
+import { createApp } from '../src/http.ts';
+import { loadLevels } from '../src/levels.ts';
+import { LIFE_REGEN_MS } from '../src/lives.ts';
+import { GameService, TIME_GRACE_MS } from '../src/service.ts';
+import { SqliteStore } from '../src/store.ts';
+
+const TOKEN = '777:test';
+const SECRET = 'hook-secret';
+const base = { width: 6, height: 6, colors: 5, difficulty: 'normal', stars: [1, 2, 3] };
+const LEVELS = new Map<number, LevelDef>([
+  [1, parseLevel({ ...base, id: 1, moves: 10, goals: [{ type: 'score', target: 1 }] })],
+  [2, parseLevel({ ...base, id: 2, moves: 50, timeLimit: 30, goals: [{ type: 'score', target: 1 }] })],
+  [3, parseLevel({ ...base, id: 3, moves: 3, goals: [{ type: 'collect', color: 0, count: 500 }] })],
+]);
+
+let clock = 1_760_000_000_000;
+let store: SqliteStore;
+let url: string;
+let server: ReturnType<typeof createApp>;
+const botCalls: { method: string; params: Record<string, unknown> }[] = [];
+const clientDir = mkdtempSync(join(tmpdir(), 'sakura-client-'));
+mkdirSync(join(clientDir, 'assets'));
+writeFileSync(join(clientDir, 'index.html'), '<!doctype html><title>Sakura</title>');
+writeFileSync(join(clientDir, 'assets', 'app-123.js'), 'console.log(1)');
+
+const fakeFetch = (async (input: string | URL | Request, init?: RequestInit) => {
+  botCalls.push({ method: String(input).split('/').pop()!, params: JSON.parse(String(init?.body)) });
+  return new Response(JSON.stringify({ ok: true, result: true }));
+}) as typeof fetch;
+
+beforeEach(async () => {
+  store?.close();
+  server?.close();
+  store = new SqliteStore(':memory:');
+  let seq = 0;
+  const service = new GameService({ store, levels: LEVELS, now: () => clock, newSeed: () => 1000 + seq, newId: () => `att-${++seq}` });
+  server = createApp({
+    service, botToken: TOKEN, devAuth: true, clientDir, now: () => clock,
+    bot: { api: new BotApi(TOKEN, fakeFetch), webAppUrl: 'https://game.example/', secret: SECRET },
+  });
+  await new Promise<void>((r) => server.listen(0, r));
+  url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  botCalls.length = 0;
+});
+after(() => {
+  server?.close();
+  store?.close();
+});
+before(() => { clock = 1_760_000_000_000; });
+
+const dev = (id = 1) => ({ authorization: `dev ${id}` });
+async function call(method: string, path: string, body?: unknown, headers: Record<string, string> = dev()) {
+  const res = await fetch(url + path, {
+    method, headers: { 'content-type': 'application/json', ...headers }, ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+  });
+  const text = await res.text();
+  let json: any;
+  try { json = JSON.parse(text); } catch { json = text; }
+  return { status: res.status, body: json, headers: res.headers };
+}
+
+/** Сыграть партию на клиенте тем же ядром: первый допустимый ход, пока не кончится. */
+function playLocally(levelId: number, seed: number, maxMoves = Infinity): Swap[] {
+  const game = new Match3Game(gameOptionsFromLevel(LEVELS.get(levelId)!, seed));
+  while (game.status === 'playing' && game.history.length < maxMoves) game.swap(game.validSwaps()[0]!);
+  return [...game.history];
+}
+
+test('auth: required; Telegram signature accepted; dev only when enabled', async () => {
+  assert.equal((await call('GET', '/api/me', undefined, {})).status, 401);
+  const initData = signInitData({
+    auth_date: String(Math.floor(clock / 1000)), user: JSON.stringify({ id: 99, first_name: 'Рэн' }),
+  }, TOKEN);
+  const me = await call('GET', '/api/me', undefined, { authorization: `tma ${initData}` });
+  assert.equal(me.status, 200);
+  assert.deepEqual(me.body.user, { id: 99, firstName: 'Рэн' });
+  assert.equal((await call('GET', '/api/me', undefined, { authorization: `tma ${initData.replace('99', '98')}` })).status, 401);
+  assert.equal((await call('GET', '/api/me', undefined, { authorization: 'dev abc' })).status, 401);
+});
+
+test('new player: 5 lives, level 1 open, level 2 locked', async () => {
+  const me = await call('GET', '/api/me');
+  assert.deepEqual(me.body.lives, { lives: 5, max: 5, nextLifeAt: null, infiniteUntil: null });
+  assert.equal(me.body.maxLevel, 1);
+  assert.equal(me.body.levelCount, 3);
+  const locked = await call('POST', '/api/attempts', { levelId: 3 });
+  assert.equal(locked.status, 403);
+  assert.equal(locked.body.error, 'level_locked');
+  assert.equal((await call('POST', '/api/attempts', { levelId: 42 })).status, 404);
+  assert.equal((await call('POST', '/api/attempts', { levelId: 'x' })).status, 400);
+});
+
+test('win: server replays the moves, refunds the life, unlocks the next level', async () => {
+  const start = await call('POST', '/api/attempts', { levelId: 1 });
+  assert.equal(start.status, 200);
+  assert.equal(start.body.lives.lives, 4, 'life is reserved during the attempt');
+  assert.equal(start.body.level.id, 1);
+  const swaps = playLocally(1, start.body.seed);
+  const fin = await call('POST', `/api/attempts/${start.body.attemptId}/finish`, { swaps });
+  assert.equal(fin.status, 200);
+  assert.equal(fin.body.result, 'won');
+  assert.ok(fin.body.score > 0 && fin.body.stars >= 1);
+  assert.equal(fin.body.lives.lives, 5);
+  assert.equal(fin.body.maxLevel, 2);
+  const me = await call('GET', '/api/me');
+  assert.deepEqual(me.body.levels[1], { stars: fin.body.stars, bestScore: fin.body.score });
+  // повторная отправка того же результата не засчитывается второй раз
+  assert.equal((await call('POST', `/api/attempts/${start.body.attemptId}/finish`, { swaps })).status, 409);
+});
+
+test('the client cannot claim a score: a forged move is rejected and the life is lost', async () => {
+  const start = await call('POST', '/api/attempts', { levelId: 1 });
+  const forged = await call('POST', `/api/attempts/${start.body.attemptId}/finish`, {
+    swaps: [{ a: { row: 0, col: 0 }, b: { row: 5, col: 5 } }], score: 999999,
+  });
+  assert.equal(forged.status, 400);
+  assert.equal(forged.body.error, 'invalid_replay');
+  assert.equal((await call('GET', '/api/me')).body.lives.lives, 4);
+  const start2 = await call('POST', '/api/attempts', { levelId: 1 });
+  const garbage = await call('POST', `/api/attempts/${start2.body.attemptId}/finish`, { swaps: 'lol' });
+  assert.equal(garbage.status, 400);
+});
+
+test('loss keeps the life spent; regen brings it back after 30 minutes', async () => {
+  await unlockLevel(3);
+  const start = await call('POST', '/api/attempts', { levelId: 3 });
+  const fin = await call('POST', `/api/attempts/${start.body.attemptId}/finish`, { swaps: playLocally(3, start.body.seed) });
+  assert.equal(fin.body.result, 'lost');
+  assert.equal(fin.body.lives.lives, 4);
+  assert.equal(fin.body.lives.nextLifeAt, clock + LIFE_REGEN_MS);
+  clock += LIFE_REGEN_MS;
+  assert.equal((await call('GET', '/api/me')).body.lives.lives, 5);
+});
+
+test('no lives: start is refused with the time of the next life', async () => {
+  await unlockLevel(3);
+  for (let i = 0; i < 5; i++) {
+    const s = await call('POST', '/api/attempts', { levelId: 3 });
+    await call('POST', `/api/attempts/${s.body.attemptId}/finish`, { swaps: playLocally(3, s.body.seed) });
+  }
+  const refused = await call('POST', '/api/attempts', { levelId: 3 });
+  assert.equal(refused.status, 409);
+  assert.equal(refused.body.error, 'no_lives');
+  assert.equal(refused.body.lives.nextLifeAt, clock + LIFE_REGEN_MS);
+  clock += LIFE_REGEN_MS;
+  assert.equal((await call('POST', '/api/attempts', { levelId: 3 })).status, 200);
+});
+
+test('closing the app mid-level counts as a loss on the next start', async () => {
+  await call('POST', '/api/attempts', { levelId: 1 });
+  const second = await call('POST', '/api/attempts', { levelId: 1 });
+  assert.equal(second.body.lives.lives, 3);
+  assert.equal((await store.getAttempt('att-1'))?.status, 'abandoned');
+});
+
+test('hidden assist kicks in after 5 losses in a row on the level', async () => {
+  await unlockLevel(3);
+  for (let i = 0; i < 5; i++) {
+    clock += LIFE_REGEN_MS * 5;
+    const s = await call('POST', '/api/attempts', { levelId: 3 });
+    assert.equal((await store.getAttempt(s.body.attemptId))?.assist, 0);
+    await call('POST', `/api/attempts/${s.body.attemptId}/finish`, { swaps: playLocally(3, s.body.seed) });
+  }
+  const s = await call('POST', '/api/attempts', { levelId: 3 });
+  assert.equal((await store.getAttempt(s.body.attemptId))?.assist, 0.02);
+  assert.equal(s.body.level.assist, undefined, 'never shown to the player');
+  // реплей идёт с тем же облегчением — иначе честная партия не сошлась бы
+  const game = new Match3Game({ ...gameOptionsFromLevel(LEVELS.get(3)!, s.body.seed), assist: 0.02 });
+  while (game.status === 'playing') game.swap(game.validSwaps()[0]!);
+  const fin = await call('POST', `/api/attempts/${s.body.attemptId}/finish`, { swaps: game.history });
+  assert.equal(fin.status, 200);
+});
+
+test('timed level: a win reported after the time limit is a loss', async () => {
+  await unlockLevel(2);
+  const s = await call('POST', '/api/attempts', { levelId: 2 });
+  clock += 30_000 + TIME_GRACE_MS + 1;
+  const fin = await call('POST', `/api/attempts/${s.body.attemptId}/finish`, { swaps: playLocally(2, s.body.seed) });
+  assert.equal(fin.body.result, 'lost');
+  const s2 = await call('POST', '/api/attempts', { levelId: 2 });
+  clock += 10_000;
+  const ok = await call('POST', `/api/attempts/${s2.body.attemptId}/finish`, { swaps: playLocally(2, s2.body.seed) });
+  assert.equal(ok.body.result, 'won');
+});
+
+test('someone else cannot finish my attempt', async () => {
+  const s = await call('POST', '/api/attempts', { levelId: 1 });
+  const res = await call('POST', `/api/attempts/${s.body.attemptId}/finish`, { swaps: [] }, dev(2));
+  assert.equal(res.status, 404);
+});
+
+test('bad input: large body, bad json, unknown route', async () => {
+  const big = await fetch(`${url}/api/attempts`, { method: 'POST', headers: dev(), body: 'x'.repeat(70_000) });
+  assert.equal(big.status, 413);
+  const bad = await fetch(`${url}/api/attempts`, { method: 'POST', headers: dev(), body: '{nope' });
+  assert.equal(bad.status, 400);
+  assert.equal((await call('GET', '/api/nothing')).status, 404);
+});
+
+test('static client: SPA fallback, cache headers, no path traversal', async () => {
+  const index = await fetch(`${url}/some/deep/link`);
+  assert.equal(index.status, 200);
+  assert.match(await index.text(), /Sakura/);
+  assert.equal(index.headers.get('cache-control'), 'no-cache');
+  const asset = await fetch(`${url}/assets/app-123.js`);
+  assert.match(asset.headers.get('cache-control') ?? '', /immutable/);
+  assert.match(asset.headers.get('content-type') ?? '', /javascript/);
+  for (const evil of ['/..%2f..%2fetc%2fpasswd', '/%2e%2e/%2e%2e/package.json']) {
+    const r = await fetch(url + evil);
+    assert.ok(r.status === 403 || !(await r.text()).includes('"name"'), evil);
+  }
+  assert.equal((await fetch(`${url}/%E0%A4%A`)).status, 400);
+  assert.equal((await fetch(`${url}/api/health`)).status, 200, 'server still alive');
+});
+
+test('bot webhook: secret required; /start answers with a web_app button', async () => {
+  const update = { message: { chat: { id: 5, type: 'private' }, from: { first_name: 'Мика' }, text: '/start' } };
+  assert.equal((await call('POST', '/telegram/webhook', update, { 'x-telegram-bot-api-secret-token': 'wrong' })).status, 401);
+  const ok = await call('POST', '/telegram/webhook', update, { 'x-telegram-bot-api-secret-token': SECRET });
+  assert.equal(ok.status, 200);
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(botCalls.length, 1);
+  assert.equal(botCalls[0]!.method, 'sendMessage');
+  assert.equal(botCalls[0]!.params.chat_id, 5);
+  assert.deepEqual((botCalls[0]!.params.reply_markup as any).inline_keyboard[0][0].web_app, { url: 'https://game.example/' });
+  await call('POST', '/telegram/webhook', { message: { chat: { id: 6, type: 'group' }, text: '/start' } }, { 'x-telegram-bot-api-secret-token': SECRET });
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(botCalls.length, 1, 'groups are ignored for now');
+});
+
+test('levels from the repo load', () => {
+  const levels = loadLevels(new URL('../../../levels', import.meta.url).pathname);
+  assert.ok(levels.size >= 6);
+});
+
+async function unlockLevel(id: number): Promise<void> {
+  for (let l = 1; l < id; l++) {
+    const s = await call('POST', '/api/attempts', { levelId: l });
+    const fin = await call('POST', `/api/attempts/${s.body.attemptId}/finish`, { swaps: playLocally(l, s.body.seed) });
+    assert.equal(fin.body.result, 'won', `unlock: won level ${l}`);
+  }
+}

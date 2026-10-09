@@ -12,6 +12,14 @@ export const t = {
   next: 'Дальше',
   bonus: (n: number) => `Финальный салют +${n}`,
   noMoves: 'Перемешиваем…',
+  lives: (n: number, max: number) => `♥ ${n}/${max}`,
+  livesInfinite: '♥ ∞',
+  nextLife: (time: string) => `Следующая жизнь через ${time}`,
+  noLivesTitle: 'Жизни закончились',
+  noLivesText: 'Фонарики-сердечки восстанавливаются сами: одна жизнь каждые 30 минут.',
+  tryAgain: 'Проверить',
+  loading: 'Загрузка…',
+  offline: 'Нет связи с сервером — играем без сохранения',
 } as const;
 
 const COLOR_NAMES = ['звёзды', 'сердца', 'луны', 'лепестки', 'капли', 'листья'] as const;
@@ -29,5 +37,8 @@ export function goalLabel(goal: Goal): string {
 
 export function formatTime(seconds: number): string {
   const s = Math.max(0, Math.ceil(seconds));
-  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+  const h = Math.floor(s / 3600);
+  const mm = String(Math.floor((s % 3600) / 60));
+  const ss = String(s % 60).padStart(2, '0');
+  return h > 0 ? `${h}:${mm.padStart(2, '0')}:${ss}` : `${mm}:${ss}`;
 }

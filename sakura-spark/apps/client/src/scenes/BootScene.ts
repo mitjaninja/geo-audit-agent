@@ -6,8 +6,9 @@ export class BootScene extends Phaser.Scene {
     super('boot');
   }
 
-  create(data: object): void {
+  create(data: { onReady: () => void }): void {
     makeTextures(this);
-    this.scene.start('game', data);
+    this.scene.stop();
+    data.onReady();
   }
 }

@@ -1,7 +1,8 @@
 import Phaser from 'phaser';
 import { gameOptionsFromLevel, Match3Game } from '@sakura/core';
 import type { CascadeStep, GameEvent, LevelDef, Pos, Swap } from '@sakura/core';
-import { t } from '../i18n.ts';
+import type { LivesView } from '../api.ts';
+import { formatTime, t } from '../i18n.ts';
 import { swipeToSwap, tap } from '../input.ts';
 import { cellAt, cellCenter, computeLayout } from '../layout.ts';
 import type { Layout } from '../layout.ts';
@@ -17,7 +18,18 @@ export interface GameSceneData {
   readonly theme: Theme;
   /** Масштаб: canvas рисуется в device pixels (до 2×), координаты макета — в CSS px. */
   readonly dpr: number;
+  /** Жизни для HUD; null — офлайн-режим без сервера. */
+  readonly lives: LivesView | null;
+  /** Итог партии: онлайн — от сервера (он проигрывает ходы сам), офлайн — локальный. */
+  readonly onGameOver: (game: Match3Game, timedOut: boolean) => Promise<GameOverResult>;
   readonly onFinish: (result: { won: boolean; next: boolean }) => void;
+}
+
+export interface GameOverResult {
+  readonly won: boolean;
+  readonly score: number;
+  readonly stars: number;
+  readonly lives: LivesView | null;
 }
 
 const key = (p: Pos) => `${p.row},${p.col}`;
@@ -84,7 +96,7 @@ export class GameScene extends Phaser.Scene {
     this.maskShape = this.make.graphics({}, false);
     this.pieceLayer.setMask(this.maskShape.createGeometryMask());
     this.selectImage = this.add.image(0, 0, 'select').setDepth(4).setVisible(false);
-    this.hud = new Hud(this, data.level, data.theme, data.dpr);
+    this.hud = new Hud(this, data.level, data.theme, data.dpr, data.lives);
 
     this.computeLayout();
     this.syncFromCore(false);
@@ -488,17 +500,26 @@ export class GameScene extends Phaser.Scene {
   private finish(): void {
     if (this.finished) return;
     this.finished = true;
-    const won = this.match.status === 'won';
-    telegram.haptic(won ? 'success' : 'error');
-    this.time.delayedCall(won ? 700 : 300, () => this.showResult(won));
+    const local: GameOverResult = {
+      won: this.match.status === 'won', score: this.match.score, stars: this.match.stars, lives: this.data_.lives,
+    };
+    const started = Date.now();
+    this.data_.onGameOver(this.match, this.timeLeft === 0)
+      .catch(() => local)
+      .then((result) => {
+        telegram.haptic(result.won ? 'success' : 'error');
+        const pause = Math.max(0, (result.won ? 700 : 300) - (Date.now() - started));
+        this.time.delayedCall(pause, () => this.showResult(result));
+      });
   }
 
-  private showResult(won: boolean): void {
+  private showResult(result: GameOverResult): void {
+    const { won } = result;
     const { theme, dpr: k } = this.data_;
     const W = this.scale.width;
     const H = this.scale.height;
     const pw = Math.min(W - 40 * k, 320 * k);
-    const ph = 300 * k;
+    const ph = 310 * k;
     const x = (W - pw) / 2;
     const y = (H - ph) / 2;
     const dim = this.add.rectangle(0, 0, W, H, 0x000000, 0.45).setOrigin(0).setInteractive();
@@ -508,11 +529,14 @@ export class GameScene extends Phaser.Scene {
     }).setOrigin(0.5);
     const stars = [0, 1, 2].map((i) => {
       const s = this.add.image(W / 2 + (i - 1) * 70 * k, y + 100 * k - (i === 1 ? 10 * k : 0), 'star').setDisplaySize(62 * k, 62 * k);
-      s.setTint(i < this.match.stars ? 0xffc93c : 0xd9d2e3);
+      s.setTint(i < result.stars ? 0xffc93c : 0xd9d2e3);
       return s;
     });
-    const score = this.add.text(W / 2, y + 156 * k, `${t.score}: ${this.match.score}`, {
-      fontFamily: FONT, fontSize: `${Math.round(18 * k)}px`, color: theme.hint,
+    const lives = result.lives;
+    const livesLine = !lives ? '' : lives.infiniteUntil ? t.livesInfinite
+      : `${t.lives(lives.lives, lives.max)}${!won && lives.nextLifeAt ? ` · ${t.nextLife(formatTime((lives.nextLifeAt - Date.now()) / 1000))}` : ''}`;
+    const score = this.add.text(W / 2, y + 150 * k, `${t.score}: ${result.score}${livesLine ? `\n${livesLine}` : ''}`, {
+      fontFamily: FONT, fontSize: `${Math.round(16 * k)}px`, color: theme.hint, align: 'center',
     }).setOrigin(0.5);
     const button = (label: string, cy: number, primary: boolean, onClick: () => void) => {
       const bw = pw - 48 * k;
@@ -528,9 +552,9 @@ export class GameScene extends Phaser.Scene {
       return [g, txt, hit];
     };
     const buttons = won
-      ? [...button(t.next, y + 204 * k, true, () => this.data_.onFinish({ won, next: true })),
-        ...button(t.retry, y + 258 * k, false, () => this.data_.onFinish({ won, next: false }))]
-      : [...button(t.retry, y + 222 * k, true, () => this.data_.onFinish({ won, next: false }))];
+      ? [...button(t.next, y + 206 * k, true, () => this.data_.onFinish({ won, next: true })),
+        ...button(t.retry, y + 260 * k, false, () => this.data_.onFinish({ won, next: false }))]
+      : [...button(t.retry, y + 230 * k, true, () => this.data_.onFinish({ won, next: false }))];
     const all = [dim, panel, title, ...stars, score, ...buttons];
     for (const o of all) (o as unknown as Phaser.GameObjects.Components.Depth).setDepth(20);
     stars.forEach((s, i) => {

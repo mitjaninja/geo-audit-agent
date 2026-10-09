@@ -1,5 +1,6 @@
 import Phaser from 'phaser';
 import type { GoalProgress, LevelDef, Match3Game } from '@sakura/core';
+import type { LivesView } from '../api.ts';
 import { formatTime, goalLabel, t } from '../i18n.ts';
 import type { Layout } from '../layout.ts';
 import { pieceKey } from '../textures.ts';
@@ -34,6 +35,7 @@ export class Hud {
     private readonly level: LevelDef,
     private readonly theme: Theme,
     private readonly k: number,
+    private readonly lives: LivesView | null,
   ) {
     const text = (size: number, color = theme.text, bold = false) => scene.add.text(0, 0, '', {
       fontFamily: FONT, fontSize: `${Math.round(size * k)}px`, color, fontStyle: bold ? 'bold' : 'normal',
@@ -64,7 +66,9 @@ export class Hud {
     this.panel.fillRoundedRect(x, y, width, height, 18 * k);
 
     const left = x + 14 * k;
-    this.title.setPosition(left, y + 10 * k).setText(t.level(this.level.id));
+    const lv = this.lives;
+    const livesText = !lv ? '' : lv.infiniteUntil ? `   ${t.livesInfinite}` : `   ${t.lives(lv.lives, lv.max)}`;
+    this.title.setPosition(left, y + 10 * k).setText(t.level(this.level.id) + livesText);
     this.counterLabel.setPosition(left, y + 30 * k).setText(this.level.timeLimit ? t.time : t.moves);
     this.counter.setPosition(left, y + 44 * k);
     this.score.setPosition(x + width - 14 * k, y + 10 * k).setOrigin(1, 0);

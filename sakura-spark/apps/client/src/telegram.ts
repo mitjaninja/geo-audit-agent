@@ -35,6 +35,11 @@ export const telegram = {
     return webApp() !== null;
   },
 
+  /** Подписанные данные запуска — сервер проверяет их подпись на каждом запросе. */
+  get initData(): string {
+    return webApp()?.initData ?? '';
+  },
+
   get themeParams(): TelegramThemeParams | undefined {
     return webApp()?.themeParams;
   },

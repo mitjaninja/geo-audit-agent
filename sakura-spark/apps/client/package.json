@@ -9,7 +9,7 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit -p .",
     "test": "node --import tsx --test test/*.test.ts",
-    "smoke": "vite build && node --import tsx e2e/smoke.ts"
+    "smoke": "vite build && node --disable-warning=ExperimentalWarning --import tsx e2e/smoke.ts"
   },
   "dependencies": {
     "@sakura/core": "*",

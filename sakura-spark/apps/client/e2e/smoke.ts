@@ -1,21 +1,28 @@
 /**
- * Дымовой e2e-тест собранного клиента в настоящем Chromium:
- * загрузка, свайп мышью, тап-тап, доигрывание до экрана результата, уровень с блокерами
- * в тёмной теме, таймер. Падает на любой ошибке страницы. Скриншоты — в SMOKE_OUT (по умолчанию e2e/out).
+ * Дымовой e2e-тест собранного клиента в настоящем Chromium против настоящего сервера
+ * (SQLite в памяти, dev-вход): свайп мышью, тап-тап, доигрывание с проверкой реплея сервером,
+ * брошенная партия, экран «жизни закончились»; офлайн — уровень с блокерами в тёмной теме и таймер.
+ * Падает на любой ошибке страницы. Скриншоты — в SMOKE_OUT (по умолчанию e2e/out).
  */
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { chromium } from 'playwright-core';
 import type { Page } from 'playwright-core';
-import { preview } from 'vite';
+import { createApp } from '../../server/src/http.ts';
+import { loadLevels } from '../../server/src/levels.ts';
+import { GameService } from '../../server/src/service.ts';
+import { SqliteStore } from '../../server/src/store.ts';
 
 const OUT = resolve(process.env.SMOKE_OUT ?? new URL('./out', import.meta.url).pathname);
 mkdirSync(OUT, { recursive: true });
 const CHROME = process.env.CHROME_PATH
   ?? ['/opt/pw-browsers/chromium-1194/chrome-linux/chrome', '/opt/pw-browsers/chromium'].find((p) => existsSync(p));
 
-const server = await preview({ root: new URL('..', import.meta.url).pathname, preview: { port: 4173, strictPort: true } });
+const store = new SqliteStore(':memory:');
+const service = new GameService({ store, levels: loadLevels(new URL('../../../levels', import.meta.url).pathname) });
+const server = createApp({ service, botToken: '', devAuth: true, clientDir: new URL('../dist', import.meta.url).pathname });
+await new Promise<void>((r) => server.listen(4173, r));
 const base = 'http://localhost:4173/';
 const browser = await chromium.launch({ ...(CHROME ? { executablePath: CHROME } : {}) });
 
@@ -29,7 +36,9 @@ async function open(query: string, colorScheme: 'light' | 'dark' = 'light'): Pro
   await page.route('https://telegram.org/**', (r) => r.fulfill({ contentType: 'text/javascript', body: '' }));
   const started = Date.now();
   await page.goto(base + query);
-  await page.waitForFunction(() => (globalThis as any).__sakura?.match && (globalThis as any).__sakura.idle);
+  if (!query.includes('expect=message')) {
+    await page.waitForFunction(() => (globalThis as any).__sakura?.match && (globalThis as any).__sakura.idle);
+  }
   console.log(`  ${query}: ready in ${Date.now() - started} ms`);
   return { page, errors };
 }
@@ -46,9 +55,9 @@ const cssCenter = (page: Page, row: number, col: number) => page.evaluate(([r, c
 }, [row, col]);
 
 try {
-  console.log('level 1: swipe, tap-tap, play to the end');
+  console.log('online, level 1: swipe, tap-tap, play to the end, server checks the replay');
   {
-    const { page, errors } = await open('?level=1&seed=1');
+    const { page, errors } = await open('?devUser=1');
     await page.screenshot({ path: `${OUT}/1-start.png` });
     const before = await moves(page);
 
@@ -95,13 +104,49 @@ try {
     await page.screenshot({ path: `${OUT}/3-result.png` });
     const status = await page.evaluate(() => (globalThis as any).__sakura.match.status);
     console.log(`  finished: ${status}`);
+    const me = await service.me((await store.getUser(1))!);
+    console.log(`  server: maxLevel ${me.maxLevel}, lives ${me.lives.lives}, level 1 ${JSON.stringify(me.levels[1])}`);
+    if (status === 'won') {
+      assert.equal(me.maxLevel, 2);
+      assert.equal(me.lives.lives, 5);
+      assert.ok(me.levels[1]!.stars >= 1);
+      const clientScore = await page.evaluate(() => (globalThis as any).__sakura.match.score);
+      assert.equal(me.levels[1]!.bestScore, clientScore, 'server replay gives the same score as the client');
+    }
     assert.deepEqual(errors, []);
     await page.context().close();
   }
 
-  console.log('level 5: holes, blockers, portals, dark theme');
+  console.log('online: abandoned attempt costs a life; no lives screen; lives come back');
   {
-    const { page, errors } = await open('?level=5&seed=3', 'dark');
+    const first = await open('?devUser=2');
+    await first.page.context().close();
+    const second = await open('?devUser=2');
+    assert.equal((await service.me((await store.getUser(2))!)).lives.lives, 3, 'first attempt abandoned, second reserved');
+    await second.page.context().close();
+    const user = (await store.getUser(2))!;
+    await store.saveLives(2, { ...user.lives, lives: 0, updatedAt: Date.now() });
+    const { page, errors } = await open('?devUser=2&expect=message');
+    // открытая попытка второй страницы закрывается как брошенная, жизней 0 — экран ожидания
+    await page.waitForFunction(() => (globalThis as any).__sakuraMessage?.buttonCenter);
+    await page.waitForTimeout(400);
+    await page.screenshot({ path: `${OUT}/7-no-lives.png` });
+    await store.saveLives(2, { lives: 5, updatedAt: Date.now(), infiniteUntil: 0 });
+    const btn = await page.evaluate(() => {
+      const m = (globalThis as any).__sakuraMessage;
+      return { x: m.buttonCenter.x / m.data_.dpr, y: m.buttonCenter.y / m.data_.dpr };
+    });
+    await page.mouse.click(btn.x, btn.y);
+    await page.waitForFunction(() => (globalThis as any).__sakura?.match && (globalThis as any).__sakura.idle && (globalThis as any).__sakura.scene.isActive());
+    assert.equal((await service.me((await store.getUser(2))!)).lives.lives, 4);
+    // 409 no_lives — ожидаемый ответ, браузер всё равно пишет его в консоль
+    assert.deepEqual(errors.filter((e) => !/status of 409/.test(e)), []);
+    await page.context().close();
+  }
+
+  console.log('offline, level 5: holes, blockers, portals, dark theme');
+  {
+    const { page, errors } = await open('?offline=1&level=5&seed=3', 'dark');
     await page.screenshot({ path: `${OUT}/4-level5-dark.png` });
     for (let i = 0; i < 6; i++) {
       await page.evaluate(async () => {
@@ -121,9 +166,9 @@ try {
     await page.context().close();
   }
 
-  console.log('level 6: timer');
+  console.log('offline, level 6: timer');
   {
-    const { page, errors } = await open('?level=6&seed=2');
+    const { page, errors } = await open('?offline=1&level=6&seed=2');
     const t0 = await page.evaluate(() => (globalThis as any).__sakura.timeLeft as number);
     await page.waitForTimeout(1200);
     const t1 = await page.evaluate(() => (globalThis as any).__sakura.timeLeft as number);
@@ -140,5 +185,6 @@ try {
   console.log(`smoke OK, screenshots in ${OUT}`);
 } finally {
   await browser.close();
-  await new Promise<void>((r) => server.httpServer.close(() => r()));
+  await new Promise<void>((r) => server.close(() => r()));
+  store.close();
 }

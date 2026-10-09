@@ -72,3 +72,23 @@ test('texts', () => {
   assert.equal(goalLabel({ type: 'collect', color: 2, count: 5 }), 'луны');
   assert.equal(goalLabel({ type: 'fog' }), 'Туман');
 });
+
+test('formatTime with hours', () => {
+  assert.equal(formatTime(3725), '1:02:05');
+});
+
+test('api client: auth header, JSON body, errors carry code and body', async () => {
+  const { ApiError, createApi } = await import('../src/api.ts');
+  const calls: { url: string; init: RequestInit }[] = [];
+  const fake = (async (url: string, init: RequestInit) => {
+    calls.push({ url, init });
+    if (url.endsWith('/api/attempts')) return new Response(JSON.stringify({ error: 'no_lives', lives: { lives: 0 } }), { status: 409 });
+    return new Response(JSON.stringify({ maxLevel: 3 }));
+  }) as unknown as typeof fetch;
+  const api = createApi({ kind: 'tma', initData: 'a=1&hash=x' }, 'https://s', fake);
+  assert.equal((await api.me()).maxLevel, 3);
+  assert.equal((calls[0]!.init.headers as Record<string, string>).authorization, 'tma a=1&hash=x');
+  await assert.rejects(api.start(2), (e: unknown) => e instanceof ApiError && e.status === 409 && e.code === 'no_lives'
+    && (e.body.lives as { lives: number }).lives === 0);
+  assert.equal(calls[1]!.init.body, JSON.stringify({ levelId: 2 }));
+});
