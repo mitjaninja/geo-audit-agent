@@ -123,9 +123,19 @@ try {
     await gameReady(page);
     await page.screenshot({ path: `${OUT}/2-after-moves.png` });
 
+    // доигрываем как разумный игрок: ход, снимающий больше всего фишек (примерка на копии)
     await page.evaluate(async () => {
       const s = (globalThis as any).__sakura;
-      while (s.match.status === 'playing') await s.trySwap(s.match.validSwaps()[0]);
+      while (s.match.status === 'playing') {
+        let best = s.match.validSwaps()[0];
+        let bestValue = -1;
+        for (const w of s.match.validSwaps()) {
+          const step = s.match.clone(7).swap(w).events.find((e: any) => e.type === 'cascade');
+          const value = step ? step.step.cleared.length + step.step.created.length * 3 : 0;
+          if (value > bestValue) [best, bestValue] = [w, value];
+        }
+        await s.trySwap(best);
+      }
     });
     await page.waitForFunction(() => (globalThis as any).__sakura.dialogButtons.length > 0);
     await page.waitForTimeout(900);

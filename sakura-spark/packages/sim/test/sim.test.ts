@@ -54,7 +54,8 @@ test('evaluate prefers a win', () => {
 });
 
 test('greedy bot beats random on a goal level', () => {
-  const lvl = loadLevel(3);
+  // фикстура, а не файл из levels/: контент уровней меняется при настройке
+  const lvl = level({ id: 3, moves: 14, goals: [{ type: 'collect', color: 1, count: 28 }] });
   const greedy = autotestLevel(lvl, { runs: 15, bot: 'greedy' });
   const random = autotestLevel(lvl, { runs: 15, bot: 'random' });
   assert.ok(greedy.winRate > random.winRate, `greedy ${greedy.winRate} vs random ${random.winRate}`);
@@ -102,4 +103,14 @@ test('cli writes a json report', () => {
   const [report] = JSON.parse(readFileSync(out, 'utf8'));
   assert.equal(report.levelId, 1);
   assert.equal(report.runs, 3);
+});
+
+test('timed levels are played for timeLimit / SECONDS_PER_MOVE moves, then the timer ends', async () => {
+  const { playOnce, SECONDS_PER_MOVE } = await import('../src/index.ts');
+  const lvl = level({ id: 3, moves: 300, timeLimit: 36, goals: [{ type: 'score', target: 1 }] });
+  const game = playOnce(lvl, 1, 'random');
+  assert.equal(game.history.length, Math.round(36 / SECONDS_PER_MOVE));
+  assert.equal(game.status, 'won');
+  const hard = playOnce(level({ id: 3, moves: 300, timeLimit: 36, goals: [{ type: 'score', target: 10_000_000 }] }), 1, 'random');
+  assert.equal(hard.status, 'lost');
 });

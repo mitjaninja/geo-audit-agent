@@ -157,7 +157,7 @@ test('lantern spawning respects total and maxOnBoard, replay stays exact', () =>
   assert.ok(collected > 0, 'lanterns do get collected in random play');
 });
 
-test('timed level: timeUp loses, win gives no move bonus, timeUp needs timeLimit', () => {
+test('timed level: play until the timer ends; goals decide the result at timeUp; no move bonus', () => {
   const timed = new Match3Game({ ...base, moves: 300, timeLimit: 60, goals: [{ type: 'collect', color: 0, count: 500 }] });
   timed.swap(sw([3, 2], [4, 2]));
   assert.equal(timed.status, 'playing');
@@ -167,9 +167,20 @@ test('timed level: timeUp loses, win gives no move bonus, timeUp needs timeLimit
 
   const won = new Match3Game({ ...base, moves: 300, timeLimit: 60, goals: [{ type: 'collect', color: 0, count: 3 }] });
   const res = won.swap(sw([3, 2], [4, 2]));
-  assert.deepEqual(res.events.at(-1), { type: 'finale', movesLeft: 299, bonus: 0 });
+  assert.equal(won.status, 'playing', 'reaching the goal does not end a timed level');
+  assert.ok(!res.events.some((e) => e.type === 'finale'));
+  const scoreBefore = won.score;
+  won.swap(won.validSwaps()[0]!);
+  assert.ok(won.score > scoreBefore, 'the player keeps scoring');
   won.timeUp();
-  assert.equal(won.status, 'won', 'time running out after a win changes nothing');
+  assert.equal(won.status, 'won');
+  assert.equal(won.stars, 0, 'no star thresholds in this fixture');
+
+  // предел ходов на уровне на время — как истёкшее время
+  const capped = new Match3Game({ ...base, moves: 1, timeLimit: 60, goals: [{ type: 'collect', color: 0, count: 3 }] });
+  capped.swap(sw([3, 2], [4, 2]));
+  assert.equal(capped.status, 'won');
 
   assert.throws(() => new Match3Game(base).timeUp(), /timeLimit/);
 });
+

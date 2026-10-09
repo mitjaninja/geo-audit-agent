@@ -1,0 +1,54 @@
+import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+import { parseArgs } from 'node:util';
+import { parseLevel } from '@sakura/core';
+import type { BotName } from './bots.ts';
+import { targetBand } from './targets.ts';
+import { formatLevel, tuneLevel } from './tune.ts';
+
+const HELP = `Подбор ходов и порогов звёзд под коридор win rate PRD (казуальный бот по умолчанию).
+
+npm run tune -- [файлы.json…] [--runs 150] [--bot casual] [--min 12] [--max 50] [--write]
+
+Без --write только печатает предложения. Уровни на время пропускаются: бот не моделирует скорость игрока.`;
+
+const { values, positionals } = parseArgs({
+  allowPositionals: true,
+  options: {
+    runs: { type: 'string', default: '150' },
+    bot: { type: 'string', default: 'casual' },
+    min: { type: 'string', default: '12' },
+    max: { type: 'string', default: '50' },
+    write: { type: 'boolean', default: false },
+    help: { type: 'boolean', short: 'h', default: false },
+  },
+});
+if (values.help) {
+  console.log(HELP);
+  process.exit(0);
+}
+
+const cwd = process.env.INIT_CWD ?? process.cwd();
+const levelsDir = resolve(import.meta.dirname, '../../../levels');
+const files = positionals.length > 0
+  ? positionals.map((f) => resolve(cwd, f))
+  : readdirSync(levelsDir).filter((f) => f.endsWith('.json')).sort().map((f) => join(levelsDir, f));
+
+for (const file of files) {
+  const raw = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>;
+  const level = parseLevel(raw);
+  if (level.timeLimit !== undefined) {
+    console.log(`level ${level.id}: skipped (timed)`);
+    continue;
+  }
+  const r = tuneLevel(level, {
+    bot: values.bot as BotName, runs: Number(values.runs), minMoves: Number(values.min), maxMoves: Number(values.max),
+  });
+  const band = targetBand(level);
+  console.log(`level ${level.id} [${level.difficulty}]: moves ${level.moves} → ${r.moves}, win ${(r.winRate * 100).toFixed(0)}% `
+    + `(target ${band.min * 100}–${band.max * 100}%)${r.inBand ? '' : ' OUT OF BAND'}, stars ${r.stars.join('/')}`);
+  if (values.write) {
+    writeFileSync(file, formatLevel({ ...raw, moves: r.moves, stars: r.stars }));
+    parseLevel(JSON.parse(readFileSync(file, 'utf8')));
+  }
+}

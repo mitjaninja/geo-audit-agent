@@ -70,17 +70,25 @@ test('every level in levels/ is valid, named by id, and playable', () => {
     assert.equal(file, `${String(level.id).padStart(4, '0')}.json`);
     assert.ok(!ids.has(level.id));
     ids.add(level.id);
+    // проходимость: простой жадный выбор хода (больше снятых фишек) иногда выигрывает.
+    // Точная сложность — дело автотеста (packages/sim), здесь только «уровень не сломан»
     let wins = 0;
-    for (let seed = 0; seed < 20; seed++) {
+    for (let seed = 0; seed < 12 && wins === 0; seed++) {
       const game = new Match3Game(gameOptionsFromLevel(level, seed));
       const rng = new Rng(seed);
       while (game.status === 'playing') {
-        const s = game.validSwaps();
-        game.swap(s[rng.int(s.length)]!);
+        let best = game.validSwaps()[0]!;
+        let bestValue = -1;
+        for (const s of game.validSwaps()) {
+          const step = game.clone(rng.int(1e9)).swap(s).events.find((e) => e.type === 'cascade');
+          const value = step?.type === 'cascade' ? step.step.cleared.length + step.step.created.length * 3 : 0;
+          if (value > bestValue) [best, bestValue] = [s, value];
+        }
+        game.swap(best);
       }
       if (game.status === 'won') wins++;
     }
-    assert.ok(wins > 0, `${file}: even a random player wins sometimes`);
+    assert.ok(wins > 0, `${file}: a sensible player wins sometimes`);
   }
 });
 

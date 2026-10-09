@@ -64,7 +64,8 @@ export interface GameOptions {
   readonly assist?: number;
   /**
    * Уровень на время (PRD, тип 6): секунды на партию. Время считает клиент и вызывает timeUp();
-   * moves тогда — скрытый предел числа ходов. Бонуса за остаток при победе нет.
+   * moves тогда — скрытый предел числа ходов. Партия идёт до конца таймера (цели не завершают её),
+   * итог — при timeUp(): цели выполнены — победа. Бонуса за остаток нет.
    */
   readonly timeLimit?: number;
 }
@@ -171,9 +172,23 @@ export class Match3Game {
   }
 
   /** Время вышло (только для уровней с timeLimit). Партия, уже выигранная, не меняется. */
+  /**
+   * Время вышло (только для уровней с timeLimit). На уровне на время цели не завершают партию —
+   * игрок набирает очки до конца таймера; итог решается здесь: цели выполнены — победа.
+   */
   timeUp(): void {
     if (this.options.timeLimit === undefined) throw new Error('timeUp on a level without timeLimit');
-    if (this.status === 'playing') this._timedOut = true;
+    if (this.status === 'playing') this.settleTimed();
+  }
+
+  private goalsDone(): boolean {
+    const goals = this.goalProgress();
+    return goals.length > 0 && goals.every((g) => g.done);
+  }
+
+  private settleTimed(): void {
+    if (this.goalsDone()) this._won = true;
+    else this._timedOut = true;
   }
 
   static replay(options: GameOptions, swaps: readonly Swap[]): Match3Game {
@@ -281,12 +296,15 @@ export class Match3Game {
       events.push({ type: 'cascade', step: this.resolveStep(index, plan), index });
     }
 
-    const goals = this.goalProgress();
-    if (goals.length > 0 && goals.every((g) => g.done)) {
+    const timed = this.options.timeLimit !== undefined;
+    if (!timed && this.goalsDone()) {
       this._won = true;
-      const bonus = this.options.timeLimit === undefined ? this._movesLeft * FINALE_BONUS_PER_MOVE : 0;
+      const bonus = this._movesLeft * FINALE_BONUS_PER_MOVE;
       this._score += bonus;
       events.push({ type: 'finale', movesLeft: this._movesLeft, bonus });
+    } else if (timed && this._movesLeft === 0) {
+      // предел ходов на уровне на время — как истёкшее время
+      this.settleTimed();
     } else {
       const spread = this.spreadFog();
       if (spread) events.push(spread);

@@ -3,11 +3,16 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "exports": { ".": "./src/index.ts" },
-  "dependencies": { "@sakura/core": "*" },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@sakura/core": "*"
+  },
   "scripts": {
     "typecheck": "tsc --noEmit -p .",
     "test": "node --import tsx --test test/*.test.ts",
-    "autotest": "node --import tsx src/cli.ts"
+    "autotest": "node --import tsx src/cli.ts",
+    "tune": "node --import tsx src/tune-cli.ts"
   }
 }

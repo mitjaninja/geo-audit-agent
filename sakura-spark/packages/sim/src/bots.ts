@@ -3,7 +3,7 @@ import type { Match3Game, Swap } from '@sakura/core';
 
 /** Бот выбирает ход для текущей партии. Партия гарантированно в статусе playing. */
 export type Bot = (game: Match3Game) => Swap;
-export type BotName = 'random' | 'greedy';
+export type BotName = 'random' | 'greedy' | 'casual';
 
 export function randomBot(seed: number): Bot {
   const rng = new Rng(seed);
@@ -59,6 +59,22 @@ export function greedyBot(seed: number): Bot {
   };
 }
 
+/**
+ * «Казуальный» бот — замена живого игрока для настройки уровней: с вероятностью skill ходит как
+ * жадный бот, иначе — случайно. Коридоры win rate в PRD написаны для людей, а жадный бот проходит
+ * почти всё. skill = 0.5 — допущение до данных софт-лонча; калибруется по реальному win rate.
+ */
+export const CASUAL_SKILL = 0.5;
+
+export function casualBot(seed: number, skill = CASUAL_SKILL): Bot {
+  const rng = new Rng(seed ^ 0x0ca5);
+  const greedy = greedyBot(seed);
+  const random = randomBot(seed + 1);
+  return (game) => (rng.next() < skill ? greedy(game) : random(game));
+}
+
 export function makeBot(name: BotName, seed: number): Bot {
-  return name === 'greedy' ? greedyBot(seed) : randomBot(seed);
+  if (name === 'greedy') return greedyBot(seed);
+  if (name === 'casual') return casualBot(seed);
+  return randomBot(seed);
 }

@@ -184,6 +184,8 @@ export class GameService {
     }
 
     const now = this.now();
+    // уровень на время идёт до конца таймера: итог решается при timeUp (клиент присылает ходы, когда время вышло)
+    if (level.timeLimit !== undefined && game.status === 'playing') game.timeUp();
     let won = game.status === 'won';
     // на уровне со временем проверяем правдоподобие: победа позже лимита не засчитывается
     if (won && level.timeLimit !== undefined && now - attempt.startedAt > level.timeLimit * 1000 + TIME_GRACE_MS) won = false;
