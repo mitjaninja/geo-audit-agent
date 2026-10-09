@@ -267,3 +267,59 @@ test('bot profile and setup: limits respected, webhook and menu button point to 
   assert.equal(botCalls[3]!.params.secret_token, webhookToken('s3cret+/='));
   assert.deepEqual((botCalls[4]!.params.menu_button as any).web_app, { url: 'https://sakura.example/' });
 });
+
+test('analytics: install, level_start, level_win / level_fail with moves left and goal progress, lives_empty', async () => {
+  const s = await call('POST', '/api/attempts', { levelId: 1 });
+  await call('POST', `/api/attempts/${s.body.attemptId}/finish`, { swaps: playLocally(1, s.body.seed) });
+  await unlockLevel(3);
+  const l = await call('POST', '/api/attempts', { levelId: 3 });
+  await call('POST', `/api/attempts/${l.body.attemptId}/finish`, { swaps: playLocally(3, l.body.seed) });
+  const events = await store.getEvents(1);
+  assert.deepEqual(events.map((e) => e.name).slice(0, 3), ['install', 'level_start', 'level_win']);
+  const win = events.find((e) => e.name === 'level_win')!;
+  assert.equal(win.levelId, 1);
+  assert.ok(typeof win.props.movesLeft === 'number' && typeof win.props.score === 'number');
+  const fail = events.find((e) => e.name === 'level_fail')!;
+  assert.equal(fail.levelId, 3);
+  assert.equal(fail.props.reason, 'lost');
+  assert.equal(fail.props.movesLeft, 0);
+  assert.ok(typeof fail.props.goalProgress === 'number' && (fail.props.goalProgress as number) < 1);
+  assert.equal(events.filter((e) => e.name === 'install').length, 1, 'install only once');
+
+  const u = (await store.getUser(1))!;
+  await store.saveLives(1, { ...u.lives, lives: 0, updatedAt: clock });
+  await call('POST', '/api/attempts', { levelId: 1 });
+  assert.equal((await store.getEvents(1)).at(-1)?.name, 'lives_empty');
+});
+
+test('analytics: client events are whitelisted and bounded', async () => {
+  const res = await call('POST', '/api/events', { events: [
+    { name: 'session_start' },
+    { name: 'hint_shown', levelId: 4, props: { after: 7 } },
+    { name: 'level_win', levelId: 1, props: { score: 999999 } },
+    { name: 'session_end', props: { blob: 'x'.repeat(2000) } },
+  ] });
+  assert.deepEqual(res.body, { accepted: 2 });
+  const names = (await store.getEvents(1)).map((e) => e.name);
+  assert.ok(!names.includes('level_win'), 'game results come only from the server');
+  assert.equal((await call('POST', '/api/events', { events: Array(21).fill({ name: 'session_start' }) })).status, 400);
+  assert.equal((await call('POST', '/api/events', { events: 'x' })).status, 400);
+});
+
+test('report: funnel, D1 retention, per-level stats', async () => {
+  const t0 = clock;
+  await call('GET', '/api/me', undefined, dev(1));
+  await call('GET', '/api/me', undefined, dev(2));
+  const s = await call('POST', '/api/attempts', { levelId: 1 }, dev(1));
+  await call('POST', `/api/attempts/${s.body.attemptId}/finish`, { swaps: playLocally(1, s.body.seed) }, dev(1));
+  clock = t0 + 30 * 3600_000;
+  await call('POST', '/api/events', { events: [{ name: 'session_start' }] }, dev(1));
+  clock = t0 + 3 * 24 * 3600_000;
+  const r = store.report(clock);
+  assert.deepEqual(r.funnel, { installs: 2, level10: 0, level30: 0 });
+  assert.deepEqual(r.d1, { cohort: 2, returned: 1, rate: 0.5 });
+  assert.equal(r.levels[0]?.levelId, 1);
+  assert.equal(r.levels[0]?.starts, 1);
+  assert.equal(r.levels[0]?.winRate, 1);
+  clock = t0;
+});

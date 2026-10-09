@@ -207,6 +207,17 @@ export function makeTextures(scene: Phaser.Scene): void {
     g.fillStyle(0xffffff, 1);
     g.fillPoints(star(44, 20), true);
   });
+  // маркер касания для обучения и подсказок: «палец» тянет фишку
+  draw(scene, 'hand', (g) => {
+    g.fillStyle(0x3b2a4a, 0.18);
+    g.fillCircle(C + 3, C + 4, 34);
+    g.fillStyle(0xffffff, 0.85);
+    g.fillCircle(C, C, 32);
+    g.lineStyle(7, 0xff6fa8, 1);
+    g.strokeCircle(C, C, 30);
+    g.fillStyle(0xff6fa8, 1);
+    g.fillCircle(C, C, 9);
+  });
   draw(scene, 'spark', (g) => {
     g.fillStyle(0xffffff, 1);
     g.fillPoints(star(20, 6, 4), true);

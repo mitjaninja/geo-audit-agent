@@ -98,6 +98,10 @@ export function createApp(deps: HttpDeps): Server {
       if (!Number.isInteger(levelId)) throw new HttpError(400, 'bad_request');
       return send(res, 200, await deps.service.startAttempt(user.id, levelId as number));
     }
+    if (method === 'POST' && path === '/api/events') {
+      const body = await readJson(req);
+      return send(res, 200, { accepted: await deps.service.clientEvents(user.id, body.events) });
+    }
     const finish = /^\/api\/attempts\/([\w-]{1,64})\/finish$/.exec(path);
     if (method === 'POST' && finish) {
       const body = await readJson(req);

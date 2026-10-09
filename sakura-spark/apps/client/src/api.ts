@@ -41,19 +41,28 @@ export class ApiError extends Error {
   }
 }
 
+export interface ClientEvent {
+  readonly name: 'session_start' | 'session_end' | 'hint_shown' | 'tutorial_complete';
+  readonly levelId?: number;
+  readonly props?: Record<string, unknown>;
+}
+
 export interface Api {
   me(): Promise<Me>;
+  /** Аналитика; keepalive — запрос доходит, даже если Mini App сворачивают. Ошибки глотаются. */
+  events(events: readonly ClientEvent[]): Promise<void>;
   start(levelId: number): Promise<Attempt>;
   finish(attemptId: string, swaps: readonly Swap[], timedOut: boolean): Promise<FinishResult>;
 }
 
 export function createApi(auth: Auth, base = '', fetchImpl: typeof fetch = (...a) => fetch(...a)): Api {
   const authorization = auth.kind === 'tma' ? `tma ${auth.initData}` : `dev ${auth.userId}`;
-  async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
+  async function call<T>(method: string, path: string, body?: unknown, keepalive = false): Promise<T> {
     const res = await fetchImpl(base + path, {
       method,
       headers: { authorization, ...(body !== undefined ? { 'content-type': 'application/json' } : {}) },
       ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+      ...(keepalive ? { keepalive: true } : {}),
     });
     const json = (await res.json().catch(() => ({}))) as Record<string, unknown>;
     if (!res.ok) throw new ApiError(res.status, String(json.error ?? 'error'), json);
@@ -61,6 +70,7 @@ export function createApi(auth: Auth, base = '', fetchImpl: typeof fetch = (...a
   }
   return {
     me: () => call<Me>('GET', '/api/me'),
+    events: (events) => call<unknown>('POST', '/api/events', { events }, true).then(() => undefined, () => undefined),
     start: (levelId) => call<Attempt>('POST', '/api/attempts', { levelId }),
     finish: (attemptId, swaps, timedOut) => call<FinishResult>('POST', `/api/attempts/${attemptId}/finish`, { swaps, timedOut }),
   };

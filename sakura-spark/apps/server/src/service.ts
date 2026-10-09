@@ -6,6 +6,18 @@ import { canPlay, fullLives, refund, spend, view } from './lives.ts';
 import type { LivesView } from './lives.ts';
 import type { AttemptRow, LevelProgress, Store, UserRow } from './store.ts';
 
+/** События, которые может прислать клиент. Игровые итоги пишет только сервер — по реплею. */
+export const CLIENT_EVENTS: ReadonlySet<string> = new Set(['session_start', 'session_end', 'hint_shown', 'tutorial_complete']);
+const MAX_CLIENT_EVENTS = 20;
+const MAX_PROPS_BYTES = 1024;
+
+/** Средний прогресс целей 0..1 — для level_fail и «почти побед». */
+function goalProgress(game: Match3Game): number {
+  const goals = game.goalProgress();
+  if (goals.length === 0) return 0;
+  return goals.reduce((sum, g) => sum + (g.target > 0 ? Math.min(1, g.current / g.target) : 1), 0) / goals.length;
+}
+
 /** Запас на сеть и анимации при проверке уровня на время. */
 export const TIME_GRACE_MS = 15_000;
 export const MAX_SWAPS = 600;
@@ -75,7 +87,30 @@ export class GameService {
   }
 
   async login(u: TelegramUser): Promise<UserRow> {
-    return this.store.upsertUser(u, this.now(), fullLives(this.now()));
+    const existed = await this.store.getUser(u.id);
+    const user = await this.store.upsertUser(u, this.now(), fullLives(this.now()));
+    if (!existed) await this.track(u.id, 'install', null, { language: u.languageCode ?? null });
+    return user;
+  }
+
+  private track(userId: number, name: string, levelId: number | null, props: Record<string, unknown> = {}): Promise<void> {
+    return this.store.addEvents([{ userId, name, ts: this.now(), levelId, props }]);
+  }
+
+  /** События от клиента: только из белого списка, не больше 20 за раз, props до 1 КБ. */
+  async clientEvents(userId: number, input: unknown): Promise<number> {
+    if (!Array.isArray(input) || input.length > MAX_CLIENT_EVENTS) throw new ServiceError('bad_request', 400);
+    const now = this.now();
+    const rows = input.flatMap((e: unknown) => {
+      if (typeof e !== 'object' || e === null) return [];
+      const { name, levelId, props } = e as { name?: unknown; levelId?: unknown; props?: unknown };
+      if (typeof name !== 'string' || !CLIENT_EVENTS.has(name)) return [];
+      const p = typeof props === 'object' && props !== null && !Array.isArray(props) ? props as Record<string, unknown> : {};
+      if (JSON.stringify(p).length > MAX_PROPS_BYTES) return [];
+      return [{ userId, name, ts: now, levelId: Number.isInteger(levelId) ? levelId as number : null, props: p }];
+    });
+    await this.store.addEvents(rows);
+    return rows.length;
   }
 
   async me(user: UserRow): Promise<MeResponse> {
@@ -109,7 +144,10 @@ export class GameService {
     }
 
     const now = this.now();
-    if (!canPlay(user.lives, now)) throw new ServiceError('no_lives', 409, { lives: view(user.lives, now) });
+    if (!canPlay(user.lives, now)) {
+      await this.track(userId, 'lives_empty', levelId, { nextLifeAt: view(user.lives, now).nextLifeAt });
+      throw new ServiceError('no_lives', 409, { lives: view(user.lives, now) });
+    }
 
     const progress = (await this.store.getLevelProgress(userId, levelId)) ?? emptyProgress(levelId);
     const lives = spend(user.lives, now);
@@ -119,6 +157,7 @@ export class GameService {
       assist: assistForLossStreak(progress.lossStreak), startedAt: now,
     };
     await this.store.createAttempt(attempt, lives);
+    await this.track(userId, 'level_start', levelId, { attemptId: attempt.id, assist: attempt.assist });
     return { attemptId: attempt.id, seed: attempt.seed, level, lives: view(lives, now) };
   }
 
@@ -149,7 +188,7 @@ export class GameService {
     // на уровне со временем проверяем правдоподобие: победа позже лимита не засчитывается
     if (won && level.timeLimit !== undefined && now - attempt.startedAt > level.timeLimit * 1000 + TIME_GRACE_MS) won = false;
     if (!won) {
-      return this.closeAsLoss(attempt, game.status === 'lost' || timedOut ? 'lost' : 'abandoned', parsed, true, game.score);
+      return this.closeAsLoss(attempt, game.status === 'lost' || timedOut ? 'lost' : 'abandoned', parsed, true, game);
     }
 
     const user = (await this.store.getUser(userId))!;
@@ -164,6 +203,10 @@ export class GameService {
       status: 'won', finishedAt: now, score: game.score, stars: game.stars, swaps: parsed, lives, progress, maxLevel,
     });
     if (!closed) throw new ServiceError('not_open', 409);
+    await this.track(userId, 'level_win', level.id, {
+      attemptId: attempt.id, score: game.score, stars: game.stars, movesUsed: parsed.length,
+      movesLeft: level.timeLimit === undefined ? game.movesLeft : null, assist: attempt.assist,
+    });
     return { result: 'won', score: game.score, stars: game.stars, bestScore: progress.bestScore, lives: view(lives, now), maxLevel };
   }
 
@@ -173,14 +216,21 @@ export class GameService {
   }
 
   private async closeAsLoss(
-    attempt: AttemptRow, status: 'lost' | 'abandoned' | 'rejected', swaps: readonly Swap[], countsAsLoss = true, score = 0,
+    attempt: AttemptRow, status: 'lost' | 'abandoned' | 'rejected', swaps: readonly Swap[], countsAsLoss = true, game?: Match3Game,
   ): Promise<FinishResponse> {
+    const score = game?.score ?? 0;
     const now = this.now();
     const user = (await this.store.getUser(attempt.userId))!;
     const prev = (await this.store.getLevelProgress(attempt.userId, attempt.levelId)) ?? emptyProgress(attempt.levelId);
     const progress = countsAsLoss ? { ...prev, losses: prev.losses + 1, lossStreak: prev.lossStreak + 1 } : null;
     await this.store.closeAttempt(attempt.id, attempt.userId, {
       status, finishedAt: now, score, stars: 0, swaps, lives: user.lives, progress, maxLevel: user.maxLevel,
+    });
+    // PRD: level_fail — с оставшимися ходами и прогрессом цели
+    await this.track(attempt.userId, 'level_fail', attempt.levelId, {
+      attemptId: attempt.id, reason: status, score, movesUsed: swaps.length,
+      movesLeft: game ? game.movesLeft : null, goalProgress: game ? Math.round(goalProgress(game) * 100) / 100 : null,
+      assist: attempt.assist,
     });
     return { result: 'lost', score, stars: 0, bestScore: prev.bestScore, lives: view(user.lives, now), maxLevel: user.maxLevel };
   }

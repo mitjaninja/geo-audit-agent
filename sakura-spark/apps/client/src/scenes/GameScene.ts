@@ -1,12 +1,14 @@
 import Phaser from 'phaser';
 import { gameOptionsFromLevel, Match3Game } from '@sakura/core';
-import type { CascadeStep, GameEvent, LevelDef, Pos, Swap } from '@sakura/core';
-import type { LivesView } from '../api.ts';
+import type { CascadeStep, GameEvent, IntroLine, LevelDef, Pos, Swap } from '@sakura/core';
+import type { ClientEvent, LivesView } from '../api.ts';
 import { formatTime, t } from '../i18n.ts';
 import { swipeToSwap, tap } from '../input.ts';
 import { cellAt, cellCenter, computeLayout } from '../layout.ts';
 import type { Layout } from '../layout.ts';
 import { telegram } from '../telegram.ts';
+import { HINT_DELAY_MS, pickHint, sameSwap, SPEAKERS } from '../tutorial.ts';
+import type { SeenStore } from '../tutorial.ts';
 import { pieceKey } from '../textures.ts';
 import { hexToInt } from '../theme.ts';
 import type { Theme } from '../theme.ts';
@@ -25,6 +27,10 @@ export interface GameSceneData {
   readonly onFinish: (action: 'next' | 'retry' | 'map') => void;
   /** Игрок вышел посреди уровня (попытка закрывается как проигрыш). */
   readonly onExit: (game: Match3Game) => Promise<void>;
+  /** Уровни, где вступление и обучающий ход уже показаны. */
+  readonly intros: SeenStore;
+  /** Клиентская аналитика (подсказки, обучение). */
+  readonly track: (event: ClientEvent) => void;
 }
 
 export interface GameOverResult {
@@ -66,6 +72,14 @@ export class GameScene extends Phaser.Scene {
   private deadline: number | undefined;
   private hiddenAt: number | undefined;
   private relayoutPending = false;
+  /** Обучающий ход: пока он не сделан, другие ходы не принимаются. */
+  gate: Swap | null = null;
+  private tutorialObjects: Phaser.GameObjects.GameObject[] = [];
+  private hintObjects: Phaser.GameObjects.GameObject[] = [];
+  private hintTweens: Phaser.Tweens.Tween[] = [];
+  private lastInput = 0;
+  /** Идёт вступление — ввод закрыт. */
+  onboarding = false;
 
   constructor() {
     super('game');
@@ -87,7 +101,13 @@ export class GameScene extends Phaser.Scene {
     this.finished = false;
     this.match = new Match3Game(gameOptionsFromLevel(data.level, data.seed));
     this.timeLeft = data.level.timeLimit;
-    this.deadline = this.timeLeft !== undefined ? performance.now() + this.timeLeft * 1000 : undefined;
+    // таймер запускается после вступления, чтобы реплики не съедали время
+    this.deadline = undefined;
+    this.gate = null;
+    this.tutorialObjects = [];
+    this.hintObjects = [];
+    this.hintTweens = [];
+    this.onboarding = false;
     this.cameras.main.setBackgroundColor(data.theme.bg);
 
     const board = this.match.board;
@@ -116,6 +136,8 @@ export class GameScene extends Phaser.Scene {
     });
 
     (globalThis as Record<string, unknown>).__sakura = this;
+    this.lastInput = this.time.now;
+    void this.runOnboarding();
   }
 
   /** Свернули Mini App — таймер на паузе. */
@@ -128,7 +150,11 @@ export class GameScene extends Phaser.Scene {
     }
   };
 
-  override update(): void {
+  override update(time: number): void {
+    if (!this.busy && !this.finished && !this.onboarding && !this.gate && this.hintObjects.length === 0
+      && this.match.status === 'playing' && time - this.lastInput > HINT_DELAY_MS) {
+      this.showHint();
+    }
     if (this.deadline === undefined || this.finished || this.hiddenAt !== undefined) return;
     if (this.match.status !== 'playing') return;
     this.timeLeft = Math.max(0, (this.deadline - performance.now()) / 1000);
@@ -138,6 +164,113 @@ export class GameScene extends Phaser.Scene {
       this.match.timeUp();
       this.finish();
     }
+  }
+
+  // ---------- обучение и подсказки ----------
+
+  private async runOnboarding(): Promise<void> {
+    const { level, intros } = this.data_;
+    const first = !intros.has(level.id);
+    if (first && level.intro) {
+      this.onboarding = true;
+      await this.speak(level.intro);
+      this.onboarding = false;
+    }
+    if (first && level.tutorial) {
+      this.gate = level.tutorial.swap;
+      this.showTutorial(level.tutorial.text, level.tutorial.swap);
+    }
+    if (first) intros.add(level.id);
+    if (this.timeLeft !== undefined) this.deadline = performance.now() + this.timeLeft * 1000;
+    this.lastInput = this.time.now;
+  }
+
+  /** Пузырь с репликой персонажа внизу экрана. */
+  private bubble(line: IntroLine, hint: string | null): Phaser.GameObjects.GameObject[] {
+    const { theme, dpr: k } = this.data_;
+    const W = this.scale.width;
+    const H = this.scale.height;
+    const w = Math.min(W - 24 * k, 420 * k);
+    const x = (W - w) / 2;
+    // сначала текст: высота пузыря — по нему, чтобы длинная реплика не налезала на подсказку
+    const text = this.add.text(0, 0, line.text, {
+      fontFamily: FONT, fontSize: `${Math.round(15 * k)}px`, color: theme.text, wordWrap: { width: w - 100 * k },
+    });
+    const h = Math.max(112 * k, text.height + (hint ? 64 : 48) * k);
+    const y = Math.min(H - h - 16 * k, this.layout.boardY + this.layout.cell * this.match.board.height + 12 * k);
+    text.setPosition(x + 86 * k, y + 34 * k);
+    const speaker = SPEAKERS[line.speaker];
+    const panel = this.add.graphics().fillStyle(hexToInt(theme.panel), 0.97).fillRoundedRect(x, y, w, h, 20 * k)
+      .lineStyle(3 * k, speaker.color, 1).strokeRoundedRect(x, y, w, h, 20 * k);
+    const avatar = this.add.circle(x + 44 * k, y + h / 2, 30 * k, speaker.color).setStrokeStyle(3 * k, 0xffffff);
+    const initial = this.add.text(x + 44 * k, y + h / 2, speaker.name[0]!, {
+      fontFamily: FONT, fontSize: `${Math.round(24 * k)}px`, fontStyle: 'bold', color: '#ffffff',
+    }).setOrigin(0.5);
+    const name = this.add.text(x + 86 * k, y + 14 * k, speaker.name, {
+      fontFamily: FONT, fontSize: `${Math.round(13 * k)}px`, fontStyle: 'bold', color: theme.hint,
+    });
+    const objs: Phaser.GameObjects.GameObject[] = [panel, avatar, initial, name, text];
+    if (hint) {
+      objs.push(this.add.text(x + w - 14 * k, y + h - 10 * k, hint, {
+        fontFamily: FONT, fontSize: `${Math.round(12 * k)}px`, color: theme.hint,
+      }).setOrigin(1, 1));
+    }
+    for (const o of objs) (o as unknown as Phaser.GameObjects.Components.Depth).setDepth(15);
+    // текст создан раньше панели (её высота — по тексту), поэтому поднимаем его над ней
+    text.setDepth(15.5);
+    return objs;
+  }
+
+  /** Реплики по очереди; тап — следующая. */
+  private async speak(lines: readonly IntroLine[]): Promise<void> {
+    for (const line of lines) {
+      const objs = this.bubble(line, t.tapToContinue);
+      for (const o of objs) {
+        const a = o as unknown as Phaser.GameObjects.Components.Alpha;
+        a.setAlpha(0);
+        this.tweens.add({ targets: o, alpha: 1, duration: 180 });
+      }
+      await new Promise<void>((resolve) => this.input.once('pointerup', () => resolve()));
+      for (const o of objs) o.destroy();
+    }
+  }
+
+  /** Рука, которая тянет фишку из a в b. */
+  private hand(swap: Swap): Phaser.GameObjects.Image {
+    const a = this.at(swap.a);
+    const b = this.at(swap.b);
+    const cell = this.layout.cell;
+    const hand = this.add.image(a.x, a.y, 'hand').setDisplaySize(cell * 0.75, cell * 0.75).setDepth(16);
+    this.tweens.add({
+      targets: hand, x: b.x, y: b.y, duration: 700, delay: 250,
+      ease: 'Sine.easeInOut', repeat: -1, repeatDelay: 450,
+    });
+    return hand;
+  }
+
+  private showTutorial(text: string, swap: Swap): void {
+    this.tutorialObjects = [...this.bubble({ speaker: 'mika', text }, null), this.hand(swap)];
+  }
+
+  /** Подсказка Пона после бездействия: пульсируют две фишки, рука показывает ход. */
+  private showHint(): void {
+    const swap = pickHint(this.match);
+    if (!swap) return;
+    this.data_.track({ name: 'hint_shown', levelId: this.data_.level.id, props: { movesLeft: this.match.movesLeft } });
+    const ids = [this.idAt(swap.a), this.idAt(swap.b)];
+    for (const id of ids) {
+      const s = id === undefined ? undefined : this.sprites.get(id);
+      if (s) this.hintTweens.push(this.tweens.add({ targets: s, scale: s.scale * 1.12, yoyo: true, repeat: -1, duration: 420 }));
+    }
+    this.hintObjects = [this.hand(swap)];
+  }
+
+  private clearHint(): void {
+    for (const tw of this.hintTweens) tw.stop();
+    this.hintTweens = [];
+    for (const o of this.hintObjects) o.destroy();
+    if (this.hintObjects.length > 0) this.syncFromCore(false);
+    this.hintObjects = [];
   }
 
   // ---------- раскладка ----------
@@ -257,7 +390,9 @@ export class GameScene extends Phaser.Scene {
   // ---------- ввод ----------
 
   private onDown(p: Phaser.Input.Pointer): void {
-    if (this.busy || this.finished) return;
+    this.lastInput = this.time.now;
+    this.clearHint();
+    if (this.busy || this.finished || this.onboarding) return;
     const at = cellAt(this.layout, p.x, p.y, this.match.board.width, this.match.board.height);
     this.pointerStart = at ? { at, x: p.x, y: p.y, swiped: false } : null;
   }
@@ -297,7 +432,20 @@ export class GameScene extends Phaser.Scene {
 
   /** Ход игрока; также точка входа для e2e-теста. */
   async trySwap(swap: Swap): Promise<boolean> {
-    if (this.busy || this.finished || this.match.status !== 'playing') return false;
+    if (this.busy || this.finished || this.onboarding || this.match.status !== 'playing') return false;
+    if (this.gate && !sameSwap(swap, this.gate)) {
+      // в обучении — только показанный ход
+      telegram.haptic('error');
+      return false;
+    }
+    if (this.gate) {
+      this.data_.track({ name: 'tutorial_complete', levelId: this.data_.level.id });
+      this.gate = null;
+      for (const o of this.tutorialObjects) o.destroy();
+      this.tutorialObjects = [];
+    }
+    this.clearHint();
+    this.lastInput = this.time.now;
     this.selected = null;
     this.selectImage.setVisible(false);
     const res = this.match.swap(swap);
@@ -597,7 +745,8 @@ export class GameScene extends Phaser.Scene {
 
   /** Выход посреди уровня: подтверждение, потом партия закрывается как брошенная. */
   private confirmExit(): void {
-    if (this.finished || this.busy) return;
+    // во время реплик тап по ✕ только листает их
+    if (this.finished || this.busy || this.onboarding) return;
     const { theme, dpr: k } = this.data_;
     const W = this.scale.width;
     const close = this.dialog({

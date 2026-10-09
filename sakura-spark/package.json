@@ -15,7 +15,9 @@
     "smoke": "npm run smoke -w @sakura/client",
     "server": "npm start -w @sakura/server",
     "server:dev": "DEV_AUTH=1 npm start -w @sakura/server",
-    "setup-bot": "npm run setup-bot -w @sakura/server"
+    "setup-bot": "npm run setup-bot -w @sakura/server",
+    "tune": "npm run -s tune -w @sakura/sim --",
+    "report": "npm run -s report -w @sakura/server"
   },
   "engines": {
     "node": ">=20"

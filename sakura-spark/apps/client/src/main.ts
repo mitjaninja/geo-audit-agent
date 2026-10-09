@@ -2,7 +2,7 @@ import Phaser from 'phaser';
 import { parseLevel } from '@sakura/core';
 import type { LevelDef, Match3Game } from '@sakura/core';
 import { ApiError, createApi } from './api.ts';
-import type { Api, Auth, LivesView } from './api.ts';
+import type { Api, Auth, ClientEvent, LivesView } from './api.ts';
 import { t } from './i18n.ts';
 import { BootScene } from './scenes/BootScene.ts';
 import { GameScene } from './scenes/GameScene.ts';
@@ -13,6 +13,7 @@ import { MessageScene } from './scenes/MessageScene.ts';
 import type { MessageData } from './scenes/MessageScene.ts';
 import { telegram } from './telegram.ts';
 import { themeFrom } from './theme.ts';
+import { seenIntros } from './tutorial.ts';
 
 /**
  * Онлайн (в Telegram или с ?devUser=<id> против сервера с DEV_AUTH): уровень и сид выдаёт сервер,
@@ -26,6 +27,13 @@ const bundled = new Map<number, LevelDef>(Object.values(files).map((json) => {
 }));
 
 const params = new URLSearchParams(location.search);
+const intros = seenIntros((() => {
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
+  }
+})());
 const theme = themeFrom(telegram.themeParams, matchMedia('(prefers-color-scheme: dark)').matches);
 document.documentElement.style.setProperty('--bg', theme.bg);
 telegram.init(theme.bg);
@@ -141,7 +149,7 @@ function startScene(level: LevelDef, seed: number, attemptId: string | null, liv
     showMap(level.id);
   };
   show('game', {
-    level, seed, theme, dpr, lives, onGameOver, onExit,
+    level, seed, theme, dpr, lives, onGameOver, onExit, intros, track,
     onFinish: (action) => {
       if (action === 'map') return showMap(level.id);
       if (action === 'retry') return void play(level.id);
@@ -152,6 +160,22 @@ function startScene(level: LevelDef, seed: number, attemptId: string | null, liv
   });
 }
 
+const track = (event: ClientEvent): void => void api?.events([event]);
+
+/** Сессии для аналитики: начало — запуск или возврат после 30+ минут, конец — когда Mini App свернули. */
+const SESSION_GAP_MS = 30 * 60_000;
+let sessionStart = Date.now();
+let hiddenAt: number | null = null;
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    hiddenAt = Date.now();
+    track({ name: 'session_end', props: { durationMs: hiddenAt - sessionStart } });
+  } else if (hiddenAt !== null && Date.now() - hiddenAt > SESSION_GAP_MS) {
+    sessionStart = Date.now();
+    track({ name: 'session_start', props: { resumed: true } });
+  }
+});
+
 async function boot(): Promise<void> {
   if (api) {
     try {
@@ -161,6 +185,7 @@ async function boot(): Promise<void> {
       progress.levelCount = me.levelCount;
       progress.stars = { ...me.levels };
       progress.lives = livesToClient(me.lives);
+      track({ name: 'session_start', props: { platform: telegram.inTelegram ? 'telegram' : 'web' } });
     } catch {
       api = null;
     }

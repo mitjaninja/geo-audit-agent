@@ -14,6 +14,7 @@
     "start": "node --disable-warning=ExperimentalWarning --import tsx src/main.ts",
     "setup-bot": "node --import tsx scripts/setup-bot.ts",
     "typecheck": "tsc --noEmit -p .",
-    "test": "node --disable-warning=ExperimentalWarning --import tsx --test test/*.test.ts"
+    "test": "node --disable-warning=ExperimentalWarning --import tsx --test test/*.test.ts",
+    "report": "node --disable-warning=ExperimentalWarning --import tsx scripts/report.ts"
   }
 }

@@ -51,6 +51,36 @@ export interface AttemptClose {
   readonly maxLevel: number;
 }
 
+/** Событие аналитики (PRD: level_start, level_win, level_fail, lives_empty, session_start/end …). */
+export interface EventRow {
+  readonly userId: number;
+  readonly name: string;
+  readonly ts: number;
+  readonly levelId: number | null;
+  readonly props: Record<string, unknown>;
+}
+
+export interface LevelStats {
+  readonly levelId: number;
+  readonly starts: number;
+  readonly wins: number;
+  readonly fails: number;
+  /** wins / (wins + fails) — брошенные партии считаются поражениями. */
+  readonly winRate: number;
+  /** Доля поражений при прогрессе целей ≥ 80% — кандидаты на окно «+5 ходов». */
+  readonly nearMissRate: number;
+  readonly avgMovesLeftOnWin: number;
+}
+
+export interface Report {
+  readonly users: number;
+  /** PRD: установка → уровень 10 → уровень 30 (покупки — после этапа платежей). */
+  readonly funnel: { readonly installs: number; readonly level10: number; readonly level30: number };
+  /** Доля игроков, вернувшихся через 24–48 ч после установки (только для установок старше 48 ч). */
+  readonly d1: { readonly cohort: number; readonly returned: number; readonly rate: number | null };
+  readonly levels: LevelStats[];
+}
+
 /**
  * Хранилище. Интерфейс асинхронный, чтобы позже заменить SQLite на Postgres без переделки сервиса.
  * Составные операции (createAttempt, closeAttempt) атомарны.
@@ -67,6 +97,8 @@ export interface Store {
   createAttempt(a: Omit<AttemptRow, 'status' | 'finishedAt' | 'score' | 'stars'>, lives: LivesState): Promise<void>;
   /** Закрыть попытку, если она ещё открыта. false — уже закрыта (повторный запрос). */
   closeAttempt(id: string, userId: number, c: AttemptClose): Promise<boolean>;
+  addEvents(events: readonly EventRow[]): Promise<void>;
+  getEvents(userId: number): Promise<EventRow[]>;
   close(): void;
 }
 
@@ -106,6 +138,16 @@ CREATE TABLE IF NOT EXISTS attempts (
   swaps TEXT
 );
 CREATE INDEX IF NOT EXISTS attempts_user_status ON attempts (user_id, status);
+CREATE TABLE IF NOT EXISTS events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  name TEXT NOT NULL,
+  ts INTEGER NOT NULL,
+  level_id INTEGER,
+  props TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS events_name_ts ON events (name, ts);
+CREATE INDEX IF NOT EXISTS events_user_ts ON events (user_id, ts);
 `;
 
 type Row = Record<string, unknown>;
@@ -234,6 +276,60 @@ export class SqliteStore implements Store {
       }
       return true;
     });
+  }
+
+  async addEvents(events: readonly EventRow[]): Promise<void> {
+    if (events.length === 0) return;
+    this.tx(() => {
+      const insert = this.db.prepare('INSERT INTO events (user_id, name, ts, level_id, props) VALUES (?, ?, ?, ?, ?)');
+      for (const e of events) insert.run(e.userId, e.name, e.ts, e.levelId, JSON.stringify(e.props));
+    });
+  }
+
+  async getEvents(userId: number): Promise<EventRow[]> {
+    return (this.db.prepare('SELECT * FROM events WHERE user_id = ? ORDER BY id').all(userId) as Row[]).map((r) => ({
+      userId: Number(r.user_id), name: String(r.name), ts: Number(r.ts),
+      levelId: r.level_id === null ? null : Number(r.level_id), props: JSON.parse(String(r.props)) as Record<string, unknown>,
+    }));
+  }
+
+  /** Сводка для продукта: воронка, D1, статистика уровней. Только SQLite — для скрипта report. */
+  report(now: number): Report {
+    const one = (sql: string, ...args: (number | string)[]) => Number(Object.values(this.db.prepare(sql).get(...args) as Row)[0] ?? 0);
+    const day = 24 * 3600_000;
+    const cohort = one('SELECT COUNT(*) FROM users WHERE created_at <= ?', now - 2 * day);
+    const returned = one(`
+      SELECT COUNT(*) FROM users u WHERE u.created_at <= ? AND EXISTS (
+        SELECT 1 FROM events e WHERE e.user_id = u.id AND e.name = 'session_start'
+          AND e.ts >= u.created_at + ? AND e.ts < u.created_at + ?)`, now - 2 * day, day, 2 * day);
+    const levels = (this.db.prepare(`
+      SELECT level_id,
+        SUM(name = 'level_start') AS starts,
+        SUM(name = 'level_win') AS wins,
+        SUM(name = 'level_fail') AS fails,
+        SUM(name = 'level_fail' AND json_extract(props, '$.goalProgress') >= 0.8) AS near,
+        AVG(CASE WHEN name = 'level_win' THEN json_extract(props, '$.movesLeft') END) AS moves_left
+      FROM events WHERE level_id IS NOT NULL AND name IN ('level_start', 'level_win', 'level_fail')
+      GROUP BY level_id ORDER BY level_id`).all() as Row[]).map((r) => {
+      const wins = Number(r.wins);
+      const fails = Number(r.fails);
+      return {
+        levelId: Number(r.level_id), starts: Number(r.starts), wins, fails,
+        winRate: wins + fails > 0 ? wins / (wins + fails) : 0,
+        nearMissRate: fails > 0 ? Number(r.near) / fails : 0,
+        avgMovesLeftOnWin: r.moves_left === null ? 0 : Number(r.moves_left),
+      };
+    });
+    return {
+      users: one('SELECT COUNT(*) FROM users'),
+      funnel: {
+        installs: one('SELECT COUNT(*) FROM users'),
+        level10: one('SELECT COUNT(*) FROM users WHERE max_level >= 10'),
+        level30: one('SELECT COUNT(*) FROM users WHERE max_level >= 30'),
+      },
+      d1: { cohort, returned, rate: cohort > 0 ? returned / cohort : null },
+      levels,
+    };
   }
 
   close(): void {

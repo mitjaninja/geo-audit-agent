@@ -29,13 +29,18 @@ const browser = await chromium.launch({ ...(CHROME ? { executablePath: CHROME } 
 const g = (page: Page, fn: string) => page.evaluate(`(() => { const s = globalThis.__sakura, m = globalThis.__sakuraMap, msg = globalThis.__sakuraMessage; return ${fn}; })()`);
 const gameReady = (page: Page) => page.waitForFunction(() => {
   const s = (globalThis as any).__sakura;
-  return s?.match && s.idle && s.scene.isActive();
+  return s?.match && s.idle && !s.onboarding && s.scene.isActive();
 });
+const gameShown = (page: Page) => page.waitForFunction(() => (globalThis as any).__sakura?.match && (globalThis as any).__sakura.scene.isActive());
 const mapReady = (page: Page) => page.waitForFunction(() => (globalThis as any).__sakuraMap?.scene.isActive());
 
-async function open(query: string, colorScheme: 'light' | 'dark' = 'light'): Promise<{ page: Page; errors: string[] }> {
+async function open(query: string, colorScheme: 'light' | 'dark' = 'light', introsSeen = true): Promise<{ page: Page; errors: string[] }> {
   const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, colorScheme });
   const page = await ctx.newPage();
+  // реплики и обучение уже «показаны» — кроме сценария, который проверяет именно их
+  if (introsSeen) {
+    await page.addInitScript(() => localStorage.setItem('sakura.intros', JSON.stringify(Array.from({ length: 100 }, (_, i) => i + 1))));
+  }
   const errors: string[] = [];
   page.on('pageerror', (e) => errors.push(String(e)));
   page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
@@ -50,11 +55,19 @@ async function clickCanvas(page: Page, p: { x: number; y: number }): Promise<voi
   await page.mouse.click(p.x / 2, p.y / 2);
 }
 
-async function tapLevelOnMap(page: Page, id: number): Promise<void> {
+async function tapLevelOnMap(page: Page, id: number, waitReady = true): Promise<void> {
   await mapReady(page);
   await g(page, `m.scrollTo(${id})`);
   await clickCanvas(page, (await g(page, `m.nodeOnScreen(${id})`)) as { x: number; y: number });
-  await gameReady(page);
+  if (waitReady) await gameReady(page);
+  else await gameShown(page);
+}
+
+async function drag(page: Page, from: { x: number; y: number }, to: { x: number; y: number }): Promise<void> {
+  await page.mouse.move(from.x, from.y);
+  await page.mouse.down();
+  await page.mouse.move(to.x, to.y, { steps: 6 });
+  await page.mouse.up();
 }
 
 async function clickDialog(page: Page, label: string): Promise<void> {
@@ -67,25 +80,41 @@ const cssCenter = (page: Page, row: number, col: number) =>
   g(page, `({ x: (s.layout.boardX + (${col} + 0.5) * s.layout.cell) / 2, y: (s.layout.boardY + (${row} + 0.5) * s.layout.cell) / 2 })`) as Promise<{ x: number; y: number }>;
 
 try {
-  console.log('online: map → level 1, swipe, tap-tap, play to the end, server checks the replay, back to map');
+  console.log('online: map → level 1: Mika intro, tutorial move, idle hint, tap-tap, play to the end, back to map');
   {
-    const { page, errors } = await open('?devUser=1');
+    const { page, errors } = await open('?devUser=1', 'light', false);
     await mapReady(page);
     await page.waitForTimeout(300);
     await page.screenshot({ path: `${OUT}/0-map-new.png` });
-    await tapLevelOnMap(page, 1);
-    await page.screenshot({ path: `${OUT}/1-start.png` });
+    await tapLevelOnMap(page, 1, false);
+    // вступление Мики: две реплики, тап листает, ходы закрыты
+    await page.waitForFunction(() => (globalThis as any).__sakura.onboarding);
+    await page.waitForTimeout(300);
+    await page.screenshot({ path: `${OUT}/1-intro.png` });
+    assert.equal(await g(page, 's.match.history.length'), 0);
+    await page.mouse.click(195, 700);
+    await page.waitForTimeout(250);
+    await page.mouse.click(195, 700);
+    await gameReady(page);
+    // обучающий ход: другой ход не принимается, показанный — делаем свайпом
+    const gate = (await g(page, 's.gate')) as any;
+    assert.ok(gate, 'tutorial gate is set');
+    await page.waitForTimeout(500);
+    await page.screenshot({ path: `${OUT}/1b-tutorial.png` });
     const before = await moves(page);
-
-    const swap = (await g(page, 's.match.validSwaps()[0]')) as any;
-    const a = await cssCenter(page, swap.a.row, swap.a.col);
-    const b = await cssCenter(page, swap.b.row, swap.b.col);
-    await page.mouse.move(a.x, a.y);
-    await page.mouse.down();
-    await page.mouse.move(b.x, b.y, { steps: 6 });
-    await page.mouse.up();
+    const other = (await g(page, `s.match.validSwaps().find((w) => !(w.a.row === ${gate.a.row} && w.a.col === ${gate.a.col} && w.b.row === ${gate.b.row} && w.b.col === ${gate.b.col}) && !(w.a.row === ${gate.b.row} && w.a.col === ${gate.b.col} && w.b.row === ${gate.a.row} && w.b.col === ${gate.a.col}))`)) as any;
+    if (other) {
+      await drag(page, await cssCenter(page, other.a.row, other.a.col), await cssCenter(page, other.b.row, other.b.col));
+      await page.waitForTimeout(400);
+      assert.equal(await moves(page), before, 'only the shown move is allowed');
+    }
+    await drag(page, await cssCenter(page, gate.a.row, gate.a.col), await cssCenter(page, gate.b.row, gate.b.col));
     await page.waitForFunction((m) => (globalThis as any).__sakura.match.movesLeft === m - 1, before);
     await gameReady(page);
+    assert.equal(await g(page, 's.gate'), null);
+    // подсказка Пона после 7 секунд бездействия
+    await page.waitForFunction(() => (globalThis as any).__sakura.hintObjects.length > 0, undefined, { timeout: 12_000 });
+    await page.screenshot({ path: `${OUT}/1c-hint.png` });
 
     const swap2 = (await g(page, 's.match.validSwaps()[0]')) as any;
     await page.mouse.click(...Object.values(await cssCenter(page, swap2.a.row, swap2.a.col)) as [number, number]);
@@ -103,6 +132,8 @@ try {
     await page.screenshot({ path: `${OUT}/3-result.png` });
     const status = await g(page, 's.match.status');
     const me = await service.me((await store.getUser(1))!);
+    const names = (await store.getEvents(1)).map((e) => e.name);
+    for (const n of ['install', 'session_start', 'level_start', 'tutorial_complete', 'hint_shown']) assert.ok(names.includes(n), `event ${n}`);
     console.log(`  finished: ${status}; server: maxLevel ${me.maxLevel}, lives ${me.lives.lives}, level 1 ${JSON.stringify(me.levels[1])}`);
     if (status === 'won') {
       assert.equal(me.maxLevel, 2);
@@ -114,9 +145,9 @@ try {
     await page.waitForTimeout(300);
     await page.screenshot({ path: `${OUT}/4-map-after-win.png` });
     if (status === 'won') {
-      // второй уровень открыт и играется с карты
-      await tapLevelOnMap(page, 2);
-      assert.equal(await g(page, 's.match.options.width') !== undefined, true);
+      // второй уровень открыт с карты и начинается с реплики Пона про лучи
+      await tapLevelOnMap(page, 2, false);
+      await page.waitForFunction(() => (globalThis as any).__sakura.onboarding);
     }
     assert.deepEqual(errors, []);
     await page.context().close();
