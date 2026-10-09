@@ -3,12 +3,16 @@
   "private": true,
   "type": "module",
   "workspaces": [
-    "packages/*"
+    "packages/*",
+    "apps/*"
   ],
   "scripts": {
     "typecheck": "npm run typecheck --workspaces --if-present",
     "test": "npm test --workspaces --if-present",
-    "autotest": "npm run -s autotest -w @sakura/sim --"
+    "autotest": "npm run -s autotest -w @sakura/sim --",
+    "dev": "npm run dev -w @sakura/client",
+    "build": "npm run build -w @sakura/client",
+    "smoke": "npm run smoke -w @sakura/client"
   },
   "engines": {
     "node": ">=20"

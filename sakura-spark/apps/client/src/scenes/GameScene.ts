@@ -1,0 +1,542 @@
+import Phaser from 'phaser';
+import { gameOptionsFromLevel, Match3Game } from '@sakura/core';
+import type { CascadeStep, GameEvent, LevelDef, Pos, Swap } from '@sakura/core';
+import { t } from '../i18n.ts';
+import { swipeToSwap, tap } from '../input.ts';
+import { cellAt, cellCenter, computeLayout } from '../layout.ts';
+import type { Layout } from '../layout.ts';
+import { telegram } from '../telegram.ts';
+import { pieceKey } from '../textures.ts';
+import { hexToInt } from '../theme.ts';
+import type { Theme } from '../theme.ts';
+import { Hud } from './hud.ts';
+
+export interface GameSceneData {
+  readonly level: LevelDef;
+  readonly seed: number;
+  readonly theme: Theme;
+  /** Масштаб: canvas рисуется в device pixels (до 2×), координаты макета — в CSS px. */
+  readonly dpr: number;
+  readonly onFinish: (result: { won: boolean; next: boolean }) => void;
+}
+
+const key = (p: Pos) => `${p.row},${p.col}`;
+const FONT = 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+
+/** Длительности анимаций, мс. */
+const T = { swap: 130, clear: 150, fx: 160, pop: 140, fallBase: 90, fallPerCell: 45, shuffle: 320 } as const;
+
+export class GameScene extends Phaser.Scene {
+  match!: Match3Game;
+  layout!: Layout;
+  private data_!: GameSceneData;
+  private hud!: Hud;
+  /** Модель того, что сейчас нарисовано: id фишки → клетка. Ведётся по событиям ядра. */
+  private readonly posOf = new Map<number, Pos>();
+  private readonly sprites = new Map<number, Phaser.GameObjects.Image>();
+  private readonly cellImages = new Map<string, Phaser.GameObjects.Image>();
+  private readonly jellyImages = new Map<string, Phaser.GameObjects.Image>();
+  private readonly blockerImages = new Map<string, Phaser.GameObjects.Image>();
+  private pieceLayer!: Phaser.GameObjects.Container;
+  private maskShape!: Phaser.GameObjects.Graphics;
+  private selectImage!: Phaser.GameObjects.Image;
+  private selected: Pos | null = null;
+  private pointerStart: { at: Pos; x: number; y: number; swiped: boolean } | null = null;
+  private busy = false;
+  private finished = false;
+  private timeLeft: number | undefined;
+  /**
+   * Таймер считается по настенным часам, а не по delta Phaser: тот сглаживает и ограничивает шаг кадра,
+   * и на медленном телефоне игровое время отстаёт от настоящего.
+   */
+  private deadline: number | undefined;
+  private hiddenAt: number | undefined;
+  private relayoutPending = false;
+
+  constructor() {
+    super('game');
+  }
+
+  get idle(): boolean {
+    return !this.busy;
+  }
+
+  create(data: GameSceneData): void {
+    this.data_ = data;
+    this.posOf.clear();
+    this.sprites.clear();
+    this.cellImages.clear();
+    this.jellyImages.clear();
+    this.blockerImages.clear();
+    this.selected = null;
+    this.busy = false;
+    this.finished = false;
+    this.match = new Match3Game(gameOptionsFromLevel(data.level, data.seed));
+    this.timeLeft = data.level.timeLimit;
+    this.deadline = this.timeLeft !== undefined ? performance.now() + this.timeLeft * 1000 : undefined;
+    this.cameras.main.setBackgroundColor(data.theme.bg);
+
+    const board = this.match.board;
+    for (const p of board.playableCells()) {
+      this.cellImages.set(key(p), this.add.image(0, 0, 'cell').setDepth(0).setAlpha(data.theme.isDark ? 0.22 : 1));
+    }
+    this.pieceLayer = this.add.container(0, 0).setDepth(2);
+    this.maskShape = this.make.graphics({}, false);
+    this.pieceLayer.setMask(this.maskShape.createGeometryMask());
+    this.selectImage = this.add.image(0, 0, 'select').setDepth(4).setVisible(false);
+    this.hud = new Hud(this, data.level, data.theme, data.dpr);
+
+    this.computeLayout();
+    this.syncFromCore(false);
+    this.hud.place(this.layout);
+    this.hud.update(this.match, this.timeLeft);
+
+    this.input.on('pointerdown', (p: Phaser.Input.Pointer) => this.onDown(p));
+    this.input.on('pointermove', (p: Phaser.Input.Pointer) => this.onMove(p));
+    this.input.on('pointerup', (p: Phaser.Input.Pointer) => this.onUp(p));
+    this.scale.on('resize', this.onResize, this);
+    document.addEventListener('visibilitychange', this.onVisibility);
+    this.events.once('shutdown', () => {
+      this.scale.off('resize', this.onResize, this);
+      document.removeEventListener('visibilitychange', this.onVisibility);
+    });
+
+    (globalThis as Record<string, unknown>).__sakura = this;
+  }
+
+  /** Свернули Mini App — таймер на паузе. */
+  private readonly onVisibility = (): void => {
+    if (this.deadline === undefined) return;
+    if (document.hidden) this.hiddenAt = performance.now();
+    else if (this.hiddenAt !== undefined) {
+      this.deadline += performance.now() - this.hiddenAt;
+      this.hiddenAt = undefined;
+    }
+  };
+
+  override update(): void {
+    if (this.deadline === undefined || this.finished || this.hiddenAt !== undefined) return;
+    if (this.match.status !== 'playing') return;
+    this.timeLeft = Math.max(0, (this.deadline - performance.now()) / 1000);
+    this.hud.update(this.match, this.timeLeft);
+    // время кончилось — ждём конца анимаций текущего хода, затем фиксируем поражение
+    if (this.timeLeft === 0 && !this.busy) {
+      this.match.timeUp();
+      this.finish();
+    }
+  }
+
+  // ---------- раскладка ----------
+
+  private computeLayout(): void {
+    const k = this.data_.dpr;
+    const insets = telegram.insets();
+    const css = computeLayout(
+      { width: this.scale.width / k, height: this.scale.height / k, insetTop: insets.top, insetBottom: insets.bottom },
+      this.match.board.width, this.match.board.height,
+    );
+    this.layout = {
+      cell: css.cell * k, boardX: css.boardX * k, boardY: css.boardY * k,
+      hud: { x: css.hud.x * k, y: css.hud.y * k, width: css.hud.width * k, height: css.hud.height * k },
+    };
+    const { boardX, boardY, cell } = this.layout;
+    this.maskShape.clear().fillStyle(0xffffff).fillRect(boardX, boardY, cell * this.match.board.width, cell * this.match.board.height);
+  }
+
+  private onResize(): void {
+    if (this.busy) {
+      this.relayoutPending = true;
+      return;
+    }
+    this.computeLayout();
+    this.hud.place(this.layout);
+    this.hud.update(this.match, this.timeLeft);
+    this.syncFromCore(false);
+  }
+
+  private at(p: Pos): { x: number; y: number } {
+    return cellCenter(this.layout, p);
+  }
+
+  private size(img: Phaser.GameObjects.Image, scale = 1): Phaser.GameObjects.Image {
+    return img.setDisplaySize(this.layout.cell * scale, this.layout.cell * scale);
+  }
+
+  // ---------- синхронизация с ядром ----------
+
+  /** Приводит картинку к состоянию ядра: фишки, слои желе и блокеров. */
+  private syncFromCore(animate: boolean): void {
+    const board = this.match.board;
+    for (const p of board.playableCells()) {
+      const c = this.at(p);
+      this.size(this.cellImages.get(key(p))!.setPosition(c.x, c.y), 0.98);
+      this.setJelly(p, this.match.jellyAt(p));
+      const b = board.blockerAt(p);
+      this.setBlocker(p, b ? (b.kind === 'fog' || b.kind === 'vines' ? b.kind : `${b.kind}${b.layers}`) : null);
+    }
+    const alive = new Set<number>();
+    for (const p of board.playableCells()) {
+      const piece = board.get(p);
+      if (!piece) continue;
+      alive.add(piece.id);
+      const texture = pieceKey(piece.color, piece.special);
+      let s = this.sprites.get(piece.id);
+      if (!s) s = this.spawnSprite(piece.id, texture, p);
+      s.setTexture(texture);
+      this.posOf.set(piece.id, p);
+      const c = this.at(p);
+      if (animate && (s.x !== c.x || s.y !== c.y)) this.tweens.add({ targets: s, x: c.x, y: c.y, duration: T.shuffle });
+      else s.setPosition(c.x, c.y);
+      this.size(s, 0.9);
+    }
+    for (const [id, s] of this.sprites) {
+      if (alive.has(id)) continue;
+      s.destroy();
+      this.sprites.delete(id);
+      this.posOf.delete(id);
+    }
+    if (this.selected) this.showSelect(this.selected);
+  }
+
+  private spawnSprite(id: number, texture: string, p: Pos): Phaser.GameObjects.Image {
+    const c = this.at(p);
+    const s = this.size(this.add.image(c.x, c.y, texture), 0.9);
+    this.pieceLayer.add(s);
+    this.sprites.set(id, s);
+    this.posOf.set(id, p);
+    return s;
+  }
+
+  private setJelly(p: Pos, layers: number): void {
+    const k = key(p);
+    const img = this.jellyImages.get(k);
+    if (layers === 0) {
+      img?.destroy();
+      this.jellyImages.delete(k);
+      return;
+    }
+    const c = this.at(p);
+    if (img) img.setTexture(`jelly${layers}`).setPosition(c.x, c.y);
+    else this.jellyImages.set(k, this.add.image(c.x, c.y, `jelly${layers}`).setDepth(1));
+    this.size(this.jellyImages.get(k)!, 0.96);
+  }
+
+  private setBlocker(p: Pos, texture: string | null): void {
+    const k = key(p);
+    const img = this.blockerImages.get(k);
+    if (!texture) {
+      img?.destroy();
+      this.blockerImages.delete(k);
+      return;
+    }
+    const c = this.at(p);
+    if (img) img.setTexture(texture).setPosition(c.x, c.y);
+    else this.blockerImages.set(k, this.add.image(c.x, c.y, texture).setDepth(3));
+    this.size(this.blockerImages.get(k)!, 0.96);
+  }
+
+  private idAt(p: Pos): number | undefined {
+    for (const [id, q] of this.posOf) if (q.row === p.row && q.col === p.col) return id;
+    return undefined;
+  }
+
+  // ---------- ввод ----------
+
+  private onDown(p: Phaser.Input.Pointer): void {
+    if (this.busy || this.finished) return;
+    const at = cellAt(this.layout, p.x, p.y, this.match.board.width, this.match.board.height);
+    this.pointerStart = at ? { at, x: p.x, y: p.y, swiped: false } : null;
+  }
+
+  private onMove(p: Phaser.Input.Pointer): void {
+    const s = this.pointerStart;
+    if (!s || s.swiped || !p.isDown) return;
+    const swap = swipeToSwap(s.at, p.x - s.x, p.y - s.y, this.layout.cell);
+    if (!swap) return;
+    s.swiped = true;
+    void this.trySwap(swap);
+  }
+
+  private onUp(p: Phaser.Input.Pointer): void {
+    const s = this.pointerStart;
+    this.pointerStart = null;
+    if (!s || s.swiped || this.busy || this.finished) return;
+    const at = cellAt(this.layout, p.x, p.y, this.match.board.width, this.match.board.height);
+    if (!at) return;
+    const r = tap(this.selected, at);
+    if (r.kind === 'swap') void this.trySwap(r.swap);
+    else if (r.kind === 'select') {
+      if (!this.match.board.isMovable(r.at)) return;
+      this.selected = r.at;
+      this.showSelect(r.at);
+      telegram.haptic('tap');
+    } else {
+      this.selected = null;
+      this.selectImage.setVisible(false);
+    }
+  }
+
+  private showSelect(p: Pos): void {
+    const c = this.at(p);
+    this.size(this.selectImage.setPosition(c.x, c.y).setVisible(true));
+  }
+
+  /** Ход игрока; также точка входа для e2e-теста. */
+  async trySwap(swap: Swap): Promise<boolean> {
+    if (this.busy || this.finished || this.match.status !== 'playing') return false;
+    this.selected = null;
+    this.selectImage.setVisible(false);
+    const res = this.match.swap(swap);
+    this.busy = true;
+    try {
+      await this.play(res.events);
+    } finally {
+      this.busy = false;
+    }
+    if (!res.valid) telegram.haptic('error');
+    this.syncFromCore(false);
+    if (this.relayoutPending) {
+      this.relayoutPending = false;
+      this.onResize();
+    }
+    this.hud.update(this.match, this.timeLeft);
+    // таймер мог истечь во время анимаций — поражение фиксируем только после хода
+    if (this.timeLeft === 0 && this.match.status === 'playing') this.match.timeUp();
+    if (this.match.status !== 'playing') this.finish();
+    return res.valid;
+  }
+
+  // ---------- анимации ----------
+
+  private tween(cfg: Phaser.Types.Tweens.TweenBuilderConfig): Promise<void> {
+    return new Promise((resolve) => {
+      this.tweens.add({ ...cfg, onComplete: () => resolve() });
+    });
+  }
+
+  private async play(events: readonly GameEvent[]): Promise<void> {
+    for (const e of events) {
+      switch (e.type) {
+        case 'swap':
+        case 'swapBack':
+          await this.animateSwap(e.swap);
+          break;
+        case 'cascade':
+          await this.animateStep(e.step, e.index);
+          break;
+        case 'shuffle':
+          this.toast(t.noMoves);
+          await Promise.all(e.moves.map((m) => {
+            this.posOf.set(m.id, m.to);
+            const s = this.sprites.get(m.id);
+            const c = this.at(m.to);
+            return s ? this.tween({ targets: s, x: c.x, y: c.y, duration: T.shuffle, ease: 'Sine.easeInOut' }) : Promise.resolve();
+          }));
+          break;
+        case 'reset':
+          this.syncFromCore(true);
+          await this.wait(T.shuffle);
+          break;
+        case 'fogSpread': {
+          const s = this.sprites.get(e.pieceId);
+          this.posOf.delete(e.pieceId);
+          this.sprites.delete(e.pieceId);
+          this.setBlocker(e.to, 'fog');
+          this.blockerImages.get(key(e.to))?.setScale(0.01);
+          await Promise.all([
+            s ? this.tween({ targets: s, alpha: 0, duration: T.clear }).then(() => s.destroy()) : Promise.resolve(),
+            this.tween({ targets: this.blockerImages.get(key(e.to)), displayWidth: this.layout.cell * 0.96, displayHeight: this.layout.cell * 0.96, duration: T.pop * 2 }),
+          ]);
+          break;
+        }
+        case 'finale':
+          if (e.bonus > 0) this.toast(t.bonus(e.bonus));
+          break;
+      }
+    }
+  }
+
+  private wait(ms: number): Promise<void> {
+    return new Promise((resolve) => this.time.delayedCall(ms, resolve));
+  }
+
+  private async animateSwap({ a, b }: Swap): Promise<void> {
+    const ia = this.idAt(a);
+    const ib = this.idAt(b);
+    const moves: Promise<void>[] = [];
+    if (ia !== undefined) {
+      this.posOf.set(ia, b);
+      moves.push(this.tween({ targets: this.sprites.get(ia), ...this.at(b), duration: T.swap, ease: 'Sine.easeInOut' }));
+    }
+    if (ib !== undefined) {
+      this.posOf.set(ib, a);
+      moves.push(this.tween({ targets: this.sprites.get(ib), ...this.at(a), duration: T.swap, ease: 'Sine.easeInOut' }));
+    }
+    await Promise.all(moves);
+  }
+
+  private async animateStep(step: CascadeStep, index: number): Promise<void> {
+    // 1. срабатывания спецфишек
+    if (step.activations.length > 0 || step.combo) telegram.haptic('big');
+    else telegram.haptic('match');
+    for (const a of step.activations) this.activationFx(a.at, a.special);
+    if (step.combo) this.comboFx(step.combo);
+
+    // 2. снятие фишек, удары по блокерам и желе
+    const cleared = step.cleared.flatMap((p) => {
+      const id = this.idAt(p);
+      return id === undefined ? [] : [id];
+    });
+    for (const id of cleared) this.posOf.delete(id);
+    const vanish = cleared.map((id) => {
+      const s = this.sprites.get(id)!;
+      this.sprites.delete(id);
+      this.sparkle(s.x, s.y);
+      return this.tween({ targets: s, scale: 0, alpha: 0, duration: T.clear, ease: 'Back.easeIn' }).then(() => s.destroy());
+    });
+    for (const h of step.blockersHit) {
+      if (h.layersLeft === 0) {
+        const img = this.blockerImages.get(key(h.at));
+        this.blockerImages.delete(key(h.at));
+        if (img) vanish.push(this.tween({ targets: img, alpha: 0, scale: img.scale * 1.3, duration: T.clear }).then(() => img.destroy()));
+      } else {
+        this.setBlocker(h.at, `${h.kind}${h.layersLeft}`);
+      }
+    }
+    for (const p of step.jellyHit) this.setJelly(p, this.match.jellyAt(p));
+    if (index > 0) this.toast(`×${index + 1}`, step.cleared[0]);
+    await Promise.all(vanish);
+
+    // 3. новые спецфишки
+    await Promise.all(step.created.map(({ piece, at }) => {
+      const s = this.spawnSprite(piece.id, pieceKey(piece.color, piece.special), at).setScale(0.01);
+      return this.tween({ targets: s, displayWidth: this.layout.cell * 0.9, displayHeight: this.layout.cell * 0.9, duration: T.pop, ease: 'Back.easeOut' });
+    }));
+
+    // 4. падение, собранные фонарики, досыпка сверху
+    const lastTo = new Map<number, Pos>();
+    for (const f of step.falls) lastTo.set(f.id, f.to);
+    const motion: Promise<void>[] = [];
+    for (const [id, to] of lastTo) {
+      const from = this.posOf.get(id);
+      this.posOf.set(id, to);
+      const s = this.sprites.get(id);
+      if (!s) continue;
+      const c = this.at(to);
+      const cells = from ? Math.abs(to.row - from.row) + Math.abs(to.col - from.col) : 1;
+      motion.push(this.tween({ targets: s, x: c.x, y: c.y, duration: T.fallBase + T.fallPerCell * cells, ease: 'Quad.easeIn' }));
+    }
+    for (const l of step.lanternsCollected) {
+      const s = this.sprites.get(l.id);
+      this.sprites.delete(l.id);
+      this.posOf.delete(l.id);
+      if (s) motion.push(this.tween({ targets: s, y: s.y + this.layout.cell, alpha: 0, duration: T.clear * 2 }).then(() => s.destroy()));
+    }
+    const perCol = new Map<number, number>();
+    for (const sp of step.spawns) perCol.set(sp.at.col, (perCol.get(sp.at.col) ?? 0) + 1);
+    for (const sp of step.spawns) {
+      const n = perCol.get(sp.at.col)!;
+      const s = this.spawnSprite(sp.piece.id, pieceKey(sp.piece.color, sp.piece.special), sp.at);
+      const c = this.at(sp.at);
+      s.setY(c.y - n * this.layout.cell);
+      motion.push(this.tween({ targets: s, y: c.y, duration: T.fallBase + T.fallPerCell * n, ease: 'Quad.easeIn' }));
+    }
+    await Promise.all(motion);
+    this.hud.update(this.match, this.timeLeft);
+  }
+
+  private activationFx(p: Pos, special: string): void {
+    const c = this.at(p);
+    const { boardX, boardY, cell } = this.layout;
+    const w = cell * this.match.board.width;
+    const h = cell * this.match.board.height;
+    if (special === 'lineH' || special === 'lineV') {
+      const beam = this.add.image(special === 'lineH' ? boardX + w / 2 : c.x, special === 'lineH' ? c.y : boardY + h / 2, 'beam').setDepth(5);
+      if (special === 'lineH') beam.setDisplaySize(w, cell);
+      else beam.setDisplaySize(h, cell).setAngle(90);
+      this.tweens.add({ targets: beam, alpha: 0, duration: T.fx * 2, onComplete: () => beam.destroy() });
+    } else {
+      const ring = this.add.circle(c.x, c.y, cell * 0.5, 0xfff3b0, 0.8).setDepth(5);
+      const r = special === 'bomb' ? 3 : 6;
+      this.tweens.add({ targets: ring, scale: r, alpha: 0, duration: T.fx * 2, onComplete: () => ring.destroy() });
+    }
+  }
+
+  private comboFx(combo: string): void {
+    this.cameras.main.shake(combo === 'sakuraStorm' ? 300 : 150, combo === 'sakuraStorm' ? 0.012 : 0.006);
+    this.cameras.main.flash(120, 255, 240, 250);
+  }
+
+  private sparkle(x: number, y: number): void {
+    const s = this.add.image(x, y, 'spark').setDepth(5);
+    this.size(s, 0.5);
+    this.tweens.add({ targets: s, angle: 90, alpha: 0, scale: s.scale * 1.8, duration: T.fx * 2, onComplete: () => s.destroy() });
+  }
+
+  private toast(text: string, at?: Pos): void {
+    const k = this.data_.dpr;
+    const c = at ? this.at(at) : { x: this.scale.width / 2, y: this.layout.boardY + this.layout.cell * 1.5 };
+    const label = this.add.text(c.x, c.y, text, {
+      fontFamily: FONT, fontSize: `${Math.round(22 * k)}px`, fontStyle: 'bold', color: '#ffffff',
+      stroke: '#ff6fa8', strokeThickness: 5 * k,
+    }).setOrigin(0.5).setDepth(8);
+    this.tweens.add({ targets: label, y: c.y - 40 * k, alpha: 0, delay: 350, duration: 600, onComplete: () => label.destroy() });
+  }
+
+  // ---------- конец партии ----------
+
+  private finish(): void {
+    if (this.finished) return;
+    this.finished = true;
+    const won = this.match.status === 'won';
+    telegram.haptic(won ? 'success' : 'error');
+    this.time.delayedCall(won ? 700 : 300, () => this.showResult(won));
+  }
+
+  private showResult(won: boolean): void {
+    const { theme, dpr: k } = this.data_;
+    const W = this.scale.width;
+    const H = this.scale.height;
+    const pw = Math.min(W - 40 * k, 320 * k);
+    const ph = 300 * k;
+    const x = (W - pw) / 2;
+    const y = (H - ph) / 2;
+    const dim = this.add.rectangle(0, 0, W, H, 0x000000, 0.45).setOrigin(0).setInteractive();
+    const panel = this.add.graphics().fillStyle(hexToInt(theme.panel), 1).fillRoundedRect(x, y, pw, ph, 24 * k);
+    const title = this.add.text(W / 2, y + 36 * k, won ? t.win : t.lose, {
+      fontFamily: FONT, fontSize: `${Math.round(26 * k)}px`, fontStyle: 'bold', color: theme.text,
+    }).setOrigin(0.5);
+    const stars = [0, 1, 2].map((i) => {
+      const s = this.add.image(W / 2 + (i - 1) * 70 * k, y + 100 * k - (i === 1 ? 10 * k : 0), 'star').setDisplaySize(62 * k, 62 * k);
+      s.setTint(i < this.match.stars ? 0xffc93c : 0xd9d2e3);
+      return s;
+    });
+    const score = this.add.text(W / 2, y + 156 * k, `${t.score}: ${this.match.score}`, {
+      fontFamily: FONT, fontSize: `${Math.round(18 * k)}px`, color: theme.hint,
+    }).setOrigin(0.5);
+    const button = (label: string, cy: number, primary: boolean, onClick: () => void) => {
+      const bw = pw - 48 * k;
+      const bh = 46 * k;
+      const g = this.add.graphics()
+        .fillStyle(primary ? hexToInt(theme.button) : hexToInt(theme.hint), primary ? 1 : 0.25)
+        .fillRoundedRect(W / 2 - bw / 2, cy - bh / 2, bw, bh, bh / 2);
+      const txt = this.add.text(W / 2, cy, label, {
+        fontFamily: FONT, fontSize: `${Math.round(18 * k)}px`, fontStyle: 'bold', color: primary ? theme.buttonText : theme.text,
+      }).setOrigin(0.5);
+      const hit = this.add.zone(W / 2, cy, bw, bh).setInteractive({ useHandCursor: true });
+      hit.on('pointerup', onClick);
+      return [g, txt, hit];
+    };
+    const buttons = won
+      ? [...button(t.next, y + 204 * k, true, () => this.data_.onFinish({ won, next: true })),
+        ...button(t.retry, y + 258 * k, false, () => this.data_.onFinish({ won, next: false }))]
+      : [...button(t.retry, y + 222 * k, true, () => this.data_.onFinish({ won, next: false }))];
+    const all = [dim, panel, title, ...stars, score, ...buttons];
+    for (const o of all) (o as unknown as Phaser.GameObjects.Components.Depth).setDepth(20);
+    stars.forEach((s, i) => {
+      const target = s.scale;
+      s.setScale(0.01);
+      this.tweens.add({ targets: s, scale: target, delay: 150 + i * 160, duration: 260, ease: 'Back.easeOut' });
+    });
+  }
+}

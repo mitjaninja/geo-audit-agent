@@ -1,0 +1,11 @@
+{
+  "id": 6,
+  "width": 8,
+  "height": 8,
+  "colors": 5,
+  "moves": 300,
+  "timeLimit": 90,
+  "difficulty": "normal",
+  "goals": [{ "type": "score", "target": 4000 }],
+  "stars": [4000, 7000, 10000]
+}

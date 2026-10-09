@@ -62,6 +62,11 @@ export interface GameOptions {
    * Ставит сервер после серии поражений, игроку не показывается. См. assistForLossStreak.
    */
   readonly assist?: number;
+  /**
+   * Уровень на время (PRD, тип 6): секунды на партию. Время считает клиент и вызывает timeUp();
+   * moves тогда — скрытый предел числа ходов. Бонуса за остаток при победе нет.
+   */
+  readonly timeLimit?: number;
 }
 
 /** PRD: после 5+ поражений подряд — мягкое облегчение, растущее с серией. */
@@ -94,6 +99,7 @@ export class Match3Game {
   private _movesLeft: number;
   private _score = 0;
   private _won = false;
+  private _timedOut = false;
   private readonly _history: Swap[] = [];
   private readonly jelly: number[][];
   private readonly jellyTotal: number;
@@ -164,6 +170,12 @@ export class Match3Game {
     });
   }
 
+  /** Время вышло (только для уровней с timeLimit). Партия, уже выигранная, не меняется. */
+  timeUp(): void {
+    if (this.options.timeLimit === undefined) throw new Error('timeUp on a level without timeLimit');
+    if (this.status === 'playing') this._timedOut = true;
+  }
+
   static replay(options: GameOptions, swaps: readonly Swap[]): Match3Game {
     const game = new Match3Game(options);
     for (const [i, swap] of swaps.entries()) {
@@ -186,6 +198,7 @@ export class Match3Game {
 
   get status(): GameStatus {
     if (this._won) return 'won';
+    if (this._timedOut) return 'lost';
     return this._movesLeft > 0 ? 'playing' : 'lost';
   }
 
@@ -271,7 +284,7 @@ export class Match3Game {
     const goals = this.goalProgress();
     if (goals.length > 0 && goals.every((g) => g.done)) {
       this._won = true;
-      const bonus = this._movesLeft * FINALE_BONUS_PER_MOVE;
+      const bonus = this.options.timeLimit === undefined ? this._movesLeft * FINALE_BONUS_PER_MOVE : 0;
       this._score += bonus;
       events.push({ type: 'finale', movesLeft: this._movesLeft, bonus });
     } else {

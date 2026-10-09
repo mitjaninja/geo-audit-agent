@@ -27,6 +27,8 @@ export interface LevelDef {
   /** В JSON: { "from": [row, col], "to": [row, col] }. */
   readonly portals?: readonly Portal[];
   readonly lanterns?: LanternRule;
+  /** Секунды на уровень; тогда moves — скрытый предел ходов. */
+  readonly timeLimit?: number;
 }
 
 export class LevelError extends Error {
@@ -59,13 +61,14 @@ function checkGrid(name: string, v: unknown, width: number, height: number, allo
 export function parseLevel(input: unknown): LevelDef {
   const errors: string[] = [];
   if (!isObj(input)) throw new LevelError(['level must be an object']);
-  const { id, width, height, colors, moves, difficulty, goals, stars, shape, jelly, layout, lanterns, blockers, portals } = input;
+  const { id, width, height, colors, moves, difficulty, goals, stars, shape, jelly, layout, lanterns, blockers, portals, timeLimit } = input;
 
   if (!isInt(id, 1, 1_000_000)) errors.push('id: integer ≥ 1');
   if (!isInt(width, 3, MAX_SIZE)) errors.push(`width: integer 3..${MAX_SIZE}`);
   if (!isInt(height, 3, MAX_SIZE)) errors.push(`height: integer 3..${MAX_SIZE}`);
   if (!isInt(colors, MIN_COLORS, MAX_COLORS)) errors.push(`colors: integer ${MIN_COLORS}..${MAX_COLORS}`);
-  if (!isInt(moves, 1, 200)) errors.push('moves: integer 1..200');
+  if (!isInt(moves, 1, 500)) errors.push('moves: integer 1..500');
+  if (timeLimit !== undefined && !isInt(timeLimit, 15, 600)) errors.push('timeLimit: integer seconds 15..600');
   if (typeof difficulty !== 'string' || !DIFFICULTIES.includes(difficulty)) errors.push(`difficulty: one of ${DIFFICULTIES.join(', ')}`);
   const st = stars as number[];
   if (!Array.isArray(stars) || st.length !== 3 || !st.every((s) => isInt(s, 1, 10_000_000))
@@ -181,6 +184,7 @@ export function parseLevel(input: unknown): LevelDef {
     ...(hasBlockers ? { blockers: [...(blockers as string[])] } : {}),
     ...(portalList.length > 0 ? { portals: portalList } : {}),
     ...(lanternRule ? { lanterns: lanternRule } : {}),
+    ...(timeLimit !== undefined ? { timeLimit: timeLimit as number } : {}),
   };
   // то, что видно только на собранном поле: петли порталов, фишки под блокерами в layout и т.п.
   try {
@@ -201,5 +205,6 @@ export function gameOptionsFromLevel(level: LevelDef, seed: number): GameOptions
     ...(level.blockers ? { blockers: level.blockers } : {}),
     ...(level.portals ? { portals: level.portals } : {}),
     ...(level.lanterns ? { lanterns: level.lanterns } : {}),
+    ...(level.timeLimit !== undefined ? { timeLimit: level.timeLimit } : {}),
   };
 }

@@ -156,3 +156,20 @@ test('lantern spawning respects total and maxOnBoard, replay stays exact', () =>
   }
   assert.ok(collected > 0, 'lanterns do get collected in random play');
 });
+
+test('timed level: timeUp loses, win gives no move bonus, timeUp needs timeLimit', () => {
+  const timed = new Match3Game({ ...base, moves: 300, timeLimit: 60, goals: [{ type: 'collect', color: 0, count: 500 }] });
+  timed.swap(sw([3, 2], [4, 2]));
+  assert.equal(timed.status, 'playing');
+  timed.timeUp();
+  assert.equal(timed.status, 'lost');
+  assert.deepEqual(timed.swap(timed.validSwaps()[0]!), { valid: false, events: [] });
+
+  const won = new Match3Game({ ...base, moves: 300, timeLimit: 60, goals: [{ type: 'collect', color: 0, count: 3 }] });
+  const res = won.swap(sw([3, 2], [4, 2]));
+  assert.deepEqual(res.events.at(-1), { type: 'finale', movesLeft: 299, bonus: 0 });
+  won.timeUp();
+  assert.equal(won.status, 'won', 'time running out after a win changes nothing');
+
+  assert.throws(() => new Match3Game(base).timeUp(), /timeLimit/);
+});

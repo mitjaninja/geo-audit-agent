@@ -8,6 +8,7 @@ Match-3 в аниме-стиле для Telegram Mini App. Требования 
   Спецфишки и комбо — в `src/specials.ts`, правила описаны в комментариях к `Special` и `ComboKind` в `src/types.ts`.
   Цели и звёзды — `src/goals.ts`, блокеры и порталы — `src/blockers.ts`, формат и валидатор уровня — `src/level.ts`.
 - `packages/sim` — боты (случайный и жадный) и автотест уровней против коридоров win rate из PRD.
+- `apps/client` — Telegram Mini App на Phaser 3: рисует события ядра, ввод свайпом и тап-тапом, HUD, тема Telegram.
 - `levels/` — уровни в JSON, имя файла = id с нулями (`0001.json`). Тест проверяет каждый файл.
 
 ## Формат уровня
@@ -43,6 +44,9 @@ Match-3 в аниме-стиле для Telegram Mini App. Требования 
 npm install
 npm run typecheck
 npm test
+npm run dev                                # клиент на http://localhost:5173/?level=1 (&seed=42 — фиксированное поле)
+npm run build                              # сборка в apps/client/dist
+npm run smoke                              # сборка + e2e в Chromium, скриншоты в apps/client/e2e/out
 npm run autotest -- --runs 1000            # все уровни, жадный бот
 npm run autotest -- levels/0003.json --bot random --runs 300 --json report.json
 ```
@@ -67,3 +71,13 @@ const { valid, events } = game.swap({ a: { row: 4, col: 4 }, b: { row: 4, col: 5
 // на сервере: тот же сид + история ходов = тот же счёт
 Match3Game.replay(game.options, game.history).score === game.score;
 ```
+
+## Клиент
+
+Сцена не знает правил: она отправляет ход в ядро и проигрывает полученные события (свап, каскады,
+перемешивание, рост тумана, финал). После каждого хода картинка дополнительно сверяется с состоянием
+ядра — если анимация где-то разошлась с правилами, поле всё равно придёт к верному виду.
+
+Графика временная — рисуется кодом в `src/textures.ts`. Когда появится арт, достаточно загрузить
+картинки под теми же ключами текстур. Canvas рисуется в device pixels (до 2×), чтобы на телефонах
+не было мыла. Таймер уровней на время идёт по настенным часам и встаёт на паузу, когда Mini App свёрнут.
