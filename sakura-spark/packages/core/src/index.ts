@@ -10,5 +10,5 @@ export { assistForLossStreak, BLOCKER_POINTS, FINALE_BONUS_PER_MOVE, Match3Game,
 export { starsFor } from './goals.ts';
 export type { Goal, GoalProgress, LanternRule } from './goals.ts';
 export { gameOptionsFromLevel, LevelError, parseLevel } from './level.ts';
-export type { Difficulty, LevelDef } from './level.ts';
+export type { Difficulty, IntroLine, LevelDef, Speaker, Tutorial } from './level.ts';
 export type { GameOptions, GameStatus } from './game.ts';

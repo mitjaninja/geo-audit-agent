@@ -83,3 +83,20 @@ test('every level in levels/ is valid, named by id, and playable', () => {
     assert.ok(wins > 0, `${file}: even a random player wins sometimes`);
   }
 });
+
+test('intro lines and tutorial swap', () => {
+  // в (0,0)…(0,2) ставим 0,0,1 и 0 в (1,2): свап (0,2)↔(1,2) собирает три нуля
+  const rows = ['00134', '12043', '23401', '34012', '40123'];
+  const base = { ...valid, width: 5, height: 5, colors: 5, layout: rows };
+  const lvl = parseLevel({
+    ...base,
+    intro: [{ speaker: 'mika', text: 'Привет!' }, { speaker: 'pon', text: 'Я подскажу.' }],
+    tutorial: { swap: [[0, 2], [1, 2]], text: 'Поменяй фишки' },
+  });
+  assert.equal(lvl.intro?.length, 2);
+  assert.deepEqual(lvl.tutorial?.swap, { a: { row: 0, col: 2 }, b: { row: 1, col: 2 } });
+  assert.match(errorsOf({ ...base, intro: [{ speaker: 'kurogiri', text: 'ха' }] }).join(), /intro/);
+  assert.match(errorsOf({ ...base, intro: [{ speaker: 'mika', text: 'x'.repeat(161) }] }).join(), /intro/);
+  assert.match(errorsOf({ ...base, tutorial: { swap: [[0, 0], [4, 4]], text: 'нет' } }).join(), /not a valid move/);
+  assert.match(errorsOf({ ...valid, tutorial: { swap: [[0, 0], [0, 1]], text: 'нет' } }).join(), /fixed layout/);
+});
