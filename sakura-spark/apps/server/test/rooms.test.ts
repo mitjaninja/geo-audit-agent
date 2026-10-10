@@ -172,7 +172,7 @@ test('expired room is closed; unknown room is 404', async () => {
   clock += ROOM_TTL_MS + 1;
   assert.equal((await call('POST', `/api/rooms/${roomId}/attempts`)).status, 410);
   assert.equal((await call('GET', '/api/rooms/rNope')).status, 404);
-  assert.equal((await call('POST', '/api/rooms', { mode: 'duel' })).status, 400);
+  assert.equal((await call('POST', '/api/rooms', { mode: 'race' })).status, 400);
 });
 
 test('limit: 5 cards per day that reached a chat', async () => {
@@ -187,11 +187,14 @@ test('limit: 5 cards per day that reached a chat', async () => {
   assert.equal((await call('POST', '/api/rooms', { mode: 'challenge' })).status, 200);
 });
 
-test('inline mode: challenge and help cards with the right buttons', async () => {
+test('inline mode: challenge, team lantern, duel and help cards with the right buttons', async () => {
   await webhook({ inline_query: { id: 'q1', from: { id: 5, first_name: 'Рэн' }, query: '' } });
   const answer = calls.find((c) => c.method === 'answerInlineQuery')!;
   assert.equal(answer.params.is_personal, true);
-  const [ch, help] = answer.params.results;
+  const [ch, team, duel, help] = answer.params.results;
+  assert.match(team.input_message_content.message_text, /Командный фонарь[\s\S]*0 \/ 2 500 огоньков/);
+  assert.match(duel.input_message_content.message_text, /Дуэль[\s\S]*Ждём соперника/);
+  assert.equal(duel.reply_markup.inline_keyboard[0][0].url, `https://t.me/sk_bot?start=${duel.id}`);
   assert.match(ch.input_message_content.message_text, /Челлендж чата/);
   assert.equal(ch.reply_markup.inline_keyboard[0][0].url, `https://t.me/sk_bot?start=${ch.id}`);
   assert.equal(ch.reply_markup.inline_keyboard[1][0].callback_data, `top:${ch.id}`);

@@ -1,10 +1,10 @@
 import { randomBytes, randomInt, randomUUID } from 'node:crypto';
 import { assistForLossStreak, gameOptionsFromLevel, Match3Game } from '@sakura/core';
-import type { LevelDef, Move, Pos } from '@sakura/core';
+import type { GameOptions, LevelDef, Move, Pos } from '@sakura/core';
 import type { TelegramUser } from './auth.ts';
 import { canPlay, fullLives, LIFE_REGEN_MS, MAX_LIVES, refund, regen, spend, view } from './lives.ts';
 import type { LivesView } from './lives.ts';
-import type { AttemptRow, LevelProgress, RoomMode, RoomRow, Store, UserRow, Wallet, WalletUpdate } from './store.ts';
+import type { AttemptRow, LevelProgress, RoomMode, RoomResult, RoomRow, Store, UserRow, Wallet, WalletUpdate } from './store.ts';
 import { DEFAULT_ECONOMY, extendPrice, GAME_ITEMS, isItem, ITEMS, START_ITEMS } from './economy.ts';
 import type { Economy, Item, ProductId } from './economy.ts';
 import { ConfigError, levelForAttempt, lossStreakForAssist, parseRemoteConfig, resolveConfig, tweakLevel } from './remote.ts';
@@ -66,13 +66,32 @@ export interface RoomView {
   readonly gifts: number;
   readonly maxGifts: number;
   readonly serverTime: number;
+  /** Итог подведён: цель фонаря выполнена, дуэль сыграна или срок вышел. */
+  readonly settled: boolean;
+  /** Командный фонарь: общий прогресс. */
+  readonly team: { readonly progress: number; readonly target: number; readonly reward: Reward } | null;
+  /** Дуэль: соперники (до двух) и победитель. */
+  readonly duel: {
+    readonly players: readonly { readonly name: string; readonly won: boolean; readonly moves: number | null; readonly score: number }[];
+    readonly winner: string | null; readonly full: boolean; readonly reward: Reward;
+  } | null;
+}
+
+/** PRD «Режимы»: сундук фонаря всем участникам, бустер победителю дуэли, бустер всем в челлендже. */
+export const TEAM_CHEST: Reward = { crystals: 3, items: { hammer: 1, rainbow: 1 } };
+export const DUEL_PRIZE: Reward = { items: { rainbow: 1 } };
+export const CHALLENGE_ALL: Reward = { items: { shuffle: 1 } };
+
+/** Дуэль: выше тот, кто прошёл уровень, потом — меньше ходов, потом — больше очков. */
+export function duelOrder(results: readonly RoomResult[]): RoomResult[] {
+  return [...results].sort((a, b) => Number(b.won) - Number(a.won) || (a.moves ?? 1e9) - (b.moves ?? 1e9) || b.bestScore - a.bestScore);
 }
 
 export class ServiceError extends Error {
   constructor(
     readonly code: 'unknown_level' | 'level_locked' | 'no_lives' | 'not_found' | 'not_open' | 'invalid_replay' | 'bad_request'
       | 'room_limit' | 'room_expired' | 'no_crystals' | 'no_items' | 'not_available' | 'already' | 'not_done' | 'limit'
-      | 'episode_locked' | 'not_friends' | 'lives_full',
+      | 'episode_locked' | 'not_friends' | 'lives_full' | 'duel_full',
     readonly status: number,
     readonly details: Record<string, unknown> = {},
   ) {
@@ -651,10 +670,13 @@ export class GameService {
     await this.store.pruneRooms(now);
     const seed = this.newSeed();
     const pool = roomLevelPool(this.levels, user.maxLevel);
+    const c = (await this.configFor(userId)).economy.chat;
+    const ttl = mode === 'team' ? c.teamHours * 3600_000 : mode === 'duel' ? c.duelMinutes * 60_000 : ROOM_TTL_MS;
     const room: RoomRow = {
       id: this.newRoomId(), mode, creatorId: userId, creatorName: user.firstName,
-      levelId: mode === 'challenge' ? pool[seed % pool.length] ?? 1 : 1, seed,
-      createdAt: now, expiresAt: now + ROOM_TTL_MS, inlineMessageId: null, gifts: 0,
+      levelId: mode === 'help' ? 1 : pool[seed % pool.length] ?? 1, seed,
+      createdAt: now, expiresAt: now + ttl, inlineMessageId: null, gifts: 0,
+      progress: 0, target: mode === 'team' ? c.teamTarget : 0, settled: false,
     };
     await this.store.createRoom(room);
     await this.track(userId, 'room_create', room.levelId, { roomId: room.id, mode });
@@ -670,32 +692,87 @@ export class GameService {
   }
 
   async roomView(roomId: string, userId: number | null): Promise<RoomView> {
-    const room = await this.store.getRoom(roomId);
+    let room = await this.store.getRoom(roomId);
     if (!room) throw new ServiceError('not_found', 404);
-    const results = await this.store.getRoomResults(roomId);
     const now = this.now();
+    // срок вышел — подвести итог сразу, не дожидаясь таймера
+    if (!room.settled && now >= room.expiresAt && room.mode !== 'help') {
+      await this.settleRoom(room);
+      room = (await this.store.getRoom(roomId))!;
+    }
+    const raw = await this.store.getRoomResults(roomId);
+    const results = room.mode === 'duel' ? duelOrder(raw) : room.mode === 'team' ? [...raw].sort((a, b) => b.contributed - a.contributed) : raw;
     const mine = userId === null ? -1 : results.findIndex((r) => r.userId === userId);
     const attempts = userId === null ? 0 : await this.store.countRoomAttempts(roomId, userId);
     return {
       id: room.id, mode: room.mode, levelId: room.levelId, creatorName: room.creatorName,
       expiresAt: room.expiresAt, expired: now >= room.expiresAt, players: results.length,
-      top: results.slice(0, ROOM_TOP).map((r, i) => ({ place: i + 1, name: r.firstName, score: r.bestScore, stars: r.stars, boosted: r.boosted })),
+      top: results.slice(0, ROOM_TOP).map((r, i) => ({
+        place: i + 1, name: r.firstName, score: room!.mode === 'team' ? r.contributed : r.bestScore, stars: r.stars, boosted: r.boosted,
+      })),
       me: { place: mine >= 0 ? mine + 1 : null, bestScore: mine >= 0 ? results[mine]!.bestScore : null, attempts },
-      nextAttemptFree: attempts === 0, gifts: room.gifts, maxGifts: MAX_GIFTS, serverTime: now,
+      nextAttemptFree: attempts === 0 || room.mode === 'duel', gifts: room.gifts, maxGifts: MAX_GIFTS, serverTime: now,
+      settled: room.settled,
+      team: room.mode === 'team' ? { progress: room.progress, target: room.target, reward: TEAM_CHEST } : null,
+      duel: room.mode === 'duel' ? {
+        players: results.map((r) => ({ name: r.firstName, won: r.won, moves: r.moves, score: r.bestScore })),
+        winner: room.settled ? duelWinner(results)?.firstName ?? null : null,
+        full: (await this.store.roomPlayers(roomId)).length >= 2, reward: DUEL_PRIZE,
+      } : null,
     };
+  }
+
+  /** Подвести итог комнаты и выдать награды (ровно один раз). */
+  private async settleRoom(room: RoomRow): Promise<void> {
+    if (!(await this.store.settleRoom(room.id))) return;
+    const now = this.now();
+    const raw = await this.store.getRoomResults(room.id);
+    const give = async (userId: number, r: Reward, text: string) => {
+      await this.store.transact(userId, (w) => grant(w, r, now));
+      void this.push(userId, text);
+    };
+    if (room.mode === 'challenge') {
+      // PRD: топ-3 — кристаллы, всем участникам — бустер
+      const prizes = (await this.configFor(room.creatorId)).economy.chat.challengePrizes;
+      for (const [i, r] of raw.entries()) {
+        const crystals = prizes[i] ?? 0;
+        await give(r.userId, { ...CHALLENGE_ALL, ...(crystals ? { crystals } : {}) },
+          `Челлендж чата завершён: ты ${i + 1}-й из ${raw.length}. Награда: ${crystals ? `${crystals} 💎 и ` : ''}бустер «Перемешать»`);
+      }
+    } else if (room.mode === 'team' && room.progress >= room.target) {
+      for (const r of raw.filter((x) => x.contributed > 0)) await give(r.userId, TEAM_CHEST, 'Командный фонарь зажжён! Сундук: 3 💎, молот и радужный кристалл');
+    } else if (room.mode === 'duel') {
+      const w = duelWinner(duelOrder(raw));
+      if (w) await give(w.userId, DUEL_PRIZE, 'Ты победил в дуэли! Награда — радужный кристалл');
+    }
+    await this.track(room.creatorId, 'room_settled', room.levelId, { roomId: room.id, mode: room.mode, players: raw.length });
+    this.onRoomChanged(room.id);
+  }
+
+  /** Итоги истёкших комнат — по таймеру. */
+  async settleExpiredRooms(): Promise<number> {
+    const rooms = await this.store.roomsToSettle(this.now(), 100);
+    for (const r of rooms) await this.settleRoom(r);
+    return rooms.length;
   }
 
   /** Попытка в челлендже: тот же уровень и сид, что у всех; первая бесплатна, дальше — жизнь. */
   async startRoomAttempt(userId: number, roomId: string, boosters: readonly unknown[] = []): Promise<StartResponse> {
     const startBoosters = parseStartBoosters(boosters);
     const room = await this.store.getRoom(roomId);
-    if (!room || room.mode !== 'challenge') throw new ServiceError('not_found', 404);
+    if (!room || room.mode === 'help') throw new ServiceError('not_found', 404);
     const now = this.now();
-    if (now >= room.expiresAt) throw new ServiceError('room_expired', 410);
+    if (now >= room.expiresAt || room.settled) throw new ServiceError('room_expired', 410);
+    if (room.mode === 'duel') {
+      // дуэль: двое, по одной попытке
+      const players = await this.store.roomPlayers(roomId);
+      if (players.includes(userId)) throw new ServiceError('already', 409);
+      if (players.length >= 2) throw new ServiceError('duel_full', 409);
+    }
     const open = await this.store.getOpenAttempt(userId);
     if (open) await this.closeAsLoss(open, 'abandoned', []);
     const user = (await this.store.getUser(userId))!;
-    const free = (await this.store.countRoomAttempts(roomId, userId)) === 0;
+    const free = room.mode === 'duel' || (await this.store.countRoomAttempts(roomId, userId)) === 0;
     if (!free && !canPlay(user.lives, now)) {
       await this.track(userId, 'lives_empty', room.levelId, { roomId, nextLifeAt: view(user.lives, now).nextLifeAt });
       throw new ServiceError('no_lives', 409, { lives: view(user.lives, now) });
@@ -725,8 +802,13 @@ export class GameService {
     const won = game.status === 'won';
     const used = game.boostersUsed();
     const boosted = attempt.startBoosters.length > 0 || used.hammer + used.freeSwap + used.shuffle > 0 || attempt.extensions > 0;
+    const room = (await this.store.getRoom(attempt.roomId!))!;
+    const movesUsed = game.history.filter((m) => !('extraMoves' in m)).length;
+    // огоньки фонаря — все снятые с поля фишки (сервер считает по реплею)
+    const contributed = room.mode === 'team' ? piecesCleared(this.optionsFor(attempt, this.levels.get(attempt.levelId)!), swaps) : 0;
     await this.store.recordRoomResult(attempt.roomId!, {
       userId: user.id, firstName: user.firstName, bestScore: game.score, stars: game.stars, won, boosted,
+      moves: won ? movesUsed : null, contributed,
     }, now);
     await this.store.closeAttempt(attempt.id, user.id, {
       status: won ? 'won' : 'lost', finishedAt: now, score: game.score, stars: game.stars, swaps,
@@ -736,8 +818,12 @@ export class GameService {
       roomId: attempt.roomId, attemptId: attempt.id, score: game.score, stars: game.stars, won, movesLeft: game.movesLeft,
     });
     await this.bumpTasks(user.id, { room: 1, score: game.score });
-    const room = await this.store.getRoom(attempt.roomId!);
-    if (room && room.creatorId !== user.id) await this.befriend(user.id, room.creatorId, 'room');
+    if (room.creatorId !== user.id) await this.befriend(user.id, room.creatorId, 'room');
+    if (room.mode === 'team' && !room.settled) {
+      const p = await this.store.addRoomProgress(room.id, contributed);
+      if (p.progress >= p.target) await this.settleRoom({ ...room, progress: p.progress });
+    }
+    if (room.mode === 'duel' && (await this.store.getRoomResults(room.id)).length >= 2) await this.settleRoom(room);
     const results = await this.store.getRoomResults(attempt.roomId!);
     const place = results.findIndex((r) => r.userId === user.id) + 1;
     this.onRoomChanged(attempt.roomId!);
@@ -761,6 +847,14 @@ export class GameService {
     if (status === 'ok') {
       await this.track(giver.id, 'life_gift', null, { roomId, to: room.creatorId });
       await this.befriend(giver.id, room.creatorId, 'gift');
+      // PRD: помогающему 1 кристалл, не больше 3 в день
+      const e = (await this.configFor(giver.id)).economy;
+      const day = dayNumber(now, e.meta.dayOffsetHours);
+      await this.store.transact(giver.id, (w) => {
+        const count = w.meta.helpDay === day ? w.meta.helpCount ?? 0 : 0;
+        if (count >= e.chat.helpCrystalsPerDay) return null;
+        return { crystals: w.crystals + 1, meta: { ...w.meta, helpDay: day, helpCount: count + 1 } };
+      });
       this.onRoomChanged(roomId);
     }
     return { status, gifts };
@@ -1157,6 +1251,22 @@ export function roomLevelPool(levels: ReadonlyMap<number, LevelDef>, creatorMaxL
 }
 
 const MAX_LIVES_VIEW = 5;
+
+/** Победитель дуэли: первый по порядку; без соперника — только если прошёл уровень. */
+function duelWinner(ordered: readonly RoomResult[]): RoomResult | null {
+  const first = ordered[0];
+  return first && (ordered.length >= 2 || first.won) ? first : null;
+}
+
+/** Сколько фишек снято с поля за партию — огоньки командного фонаря. */
+export function piecesCleared(options: GameOptions, moves: readonly Move[]): number {
+  const game = new Match3Game(options);
+  let n = 0;
+  for (const m of moves) {
+    for (const e of game.apply(m).events) if (e.type === 'cascade') n += e.step.cleared.length;
+  }
+  return n;
+}
 
 export interface GateView {
   readonly episode: number;

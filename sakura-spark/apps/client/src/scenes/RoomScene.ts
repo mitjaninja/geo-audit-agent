@@ -1,5 +1,6 @@
 import Phaser from 'phaser';
 import type { RoomView } from '../api.ts';
+import { rewardText } from '../meta.ts';
 import { formatTime, t } from '../i18n.ts';
 import { telegram } from '../telegram.ts';
 import { hexToInt } from '../theme.ts';
@@ -18,7 +19,10 @@ export interface RoomData {
 const FONT = 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
 const MEDALS = ['🥇', '🥈', '🥉', '4', '5'];
 
-/** Комната челленджа: рейтинг чата, время до конца, кнопка «Играть» (первая попытка бесплатна). */
+/**
+ * Комната чата: челлендж (рейтинг по очкам), командный фонарь (общий прогресс и вклад),
+ * дуэль (двое, меньше ходов — победа). Время до конца, кнопка «Играть».
+ */
 export class RoomScene extends Phaser.Scene {
   private data_!: RoomData;
   private timerText!: Phaser.GameObjects.Text;
@@ -43,15 +47,47 @@ export class RoomScene extends Phaser.Scene {
       this.add.text(px, y, s, { fontFamily: FONT, fontSize: `${Math.round(size * k)}px`, color, fontStyle: bold ? 'bold' : 'normal' })
         .setOrigin(originX, 0.5);
 
-    const rows = Math.max(1, view.top.length) + (view.me.place && view.me.place > view.top.length ? 1 : 0);
-    const ph = (220 + rows * 44 + 130) * k;
-    this.add.graphics().fillStyle(hexToInt(theme.panel), 1).fillRoundedRect(x, top, pw, ph, 24 * k);
+    const team = view.mode === 'team' ? view.team ?? null : null;
+    const duel = view.mode === 'duel' ? view.duel ?? null : null;
+    const rows = duel ? Math.max(1, duel.players.length) + 1
+      : Math.max(1, view.top.length) + (view.me.place && view.me.place > view.top.length ? 1 : 0);
+    const ph = (220 + rows * 44 + 130 + (team ? 70 : 0)) * k;
+    const panel = this.add.graphics().fillStyle(hexToInt(theme.panel), 1).fillRoundedRect(x, top, pw, ph, 24 * k);
     this.add.image(W / 2, top + 38 * k, 'lantern').setDisplaySize(52 * k, 52 * k);
-    text(W / 2, top + 84 * k, t.room.title, 24, theme.text, true);
-    text(W / 2, top + 112 * k, t.room.subtitle(view.levelId, view.creatorName || '—'), 14, theme.hint);
+    const creator = view.creatorName || '—';
+    text(W / 2, top + 84 * k, team ? t.room.teamTitle : duel ? t.room.duelTitle : t.room.title, 24, theme.text, true);
+    text(W / 2, top + 112 * k, team ? t.room.teamSubtitle(creator) : duel ? t.room.duelSubtitle(view.levelId, creator) : t.room.subtitle(view.levelId, creator), 14, theme.hint);
     this.timerText = text(W / 2, top + 136 * k, '', 14, theme.text, true);
 
     let y = top + 180 * k;
+    if (team) {
+      // общий прогресс фонаря
+      const bw = pw - 56 * k;
+      const frac = Math.min(1, team.progress / Math.max(1, team.target));
+      this.add.graphics().fillStyle(hexToInt(theme.hint), 0.2).fillRoundedRect(x + 28 * k, y - 10 * k, bw, 20 * k, 10 * k)
+        .fillStyle(0xffa94d, 1).fillRoundedRect(x + 28 * k, y - 10 * k, Math.max(20 * k, bw * frac), 20 * k, 10 * k);
+      text(W / 2, y + 26 * k, t.room.teamProgress(Math.min(team.progress, team.target), team.target), 14, theme.text, true);
+      text(W / 2, y + 48 * k, team.progress >= team.target ? t.room.teamDone : t.room.teamReward(rewardText(team.reward)), 12, theme.hint);
+      y += 90 * k;
+    }
+    if (duel) {
+      if (duel.players.length === 0) text(W / 2, y, t.room.duelWaiting, 15, theme.hint);
+      duel.players.forEach((p, i) => {
+        text(x + 34 * k, y, i === 0 && duel.winner ? '🏆' : '⚔️', 16, theme.text, true, 0);
+        text(x + 72 * k, y, p.name || '—', 16, theme.text, duel.winner === p.name, 0);
+        text(x + pw - 28 * k, y, p.won ? t.room.duelMoves(p.moves ?? 0) : t.room.duelLost, 16, theme.text, true, 1);
+        y += 44 * k;
+      });
+      if (duel.players.length === 0) y += 44 * k;
+      text(W / 2, y, duel.winner ? t.room.duelWinner(duel.winner) : t.room.teamReward(rewardText(duel.reward)), 14, theme.hint);
+      y += 44 * k;
+      const canPlay = !view.expired && !view.settled && !duel.full && view.me.attempts === 0;
+      if (canPlay) this.button(t.room.duelAccept, y, true, data.onPlay);
+      this.button(t.toMap, y + (canPlay ? 56 : 0) * k, !canPlay, data.onMap);
+      panel.clear().fillStyle(hexToInt(theme.panel), 1).fillRoundedRect(x, top, pw, y + (canPlay ? 90 : 34) * k - top, 24 * k);
+      (globalThis as Record<string, unknown>).__sakuraRoom = this;
+      return;
+    }
     if (view.top.length === 0) {
       text(W / 2, y, t.room.empty, 15, theme.hint);
       y += 44 * k;
@@ -70,7 +106,7 @@ export class RoomScene extends Phaser.Scene {
     text(W / 2, y, t.room.players(view.players), 14, theme.hint);
     y += 44 * k;
 
-    const primary = view.expired ? null : view.nextAttemptFree ? t.room.playFree : t.room.playLife;
+    const primary = view.expired || view.settled ? null : view.nextAttemptFree ? t.room.playFree : t.room.playLife;
     if (primary) this.button(primary, y, true, data.onPlay);
     this.button(t.toMap, y + (primary ? 56 : 0) * k, !primary, data.onMap);
     (globalThis as Record<string, unknown>).__sakuraRoom = this;

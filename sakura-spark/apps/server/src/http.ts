@@ -154,7 +154,7 @@ export function createApp(deps: HttpDeps): Server {
     }
     if (method === 'POST' && path === '/api/rooms') {
       const { mode } = await readJson(req);
-      if (mode !== 'challenge' && mode !== 'help') throw new HttpError(400, 'bad_request');
+      if (mode !== 'challenge' && mode !== 'help' && mode !== 'team' && mode !== 'duel') throw new HttpError(400, 'bad_request');
       const room = await deps.service.createRoom(user.id, mode);
       // карточку для shareMessage готовит бот; без бота (разработка) или при сбое Bot API — только ссылка
       const preparedMessageId = deps.bot

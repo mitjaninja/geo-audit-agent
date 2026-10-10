@@ -2,6 +2,9 @@ import Phaser from 'phaser';
 import { parseLevel } from '@sakura/core';
 import type { LevelDef, Match3Game } from '@sakura/core';
 import { ApiError, createApi } from './api.ts';
+import type { RoomMode } from './api.ts';
+import { ChoiceScene } from './scenes/ChoiceScene.ts';
+import type { ChoiceData } from './scenes/ChoiceScene.ts';
 import type { Api, Auth, ClientEvent, FriendsView, GateView, Item, LivesView, MetaView, ProductId, ShopView, WalletView } from './api.ts';
 import { FriendsScene } from './scenes/FriendsScene.ts';
 import type { FriendAction, FriendsData } from './scenes/FriendsScene.ts';
@@ -88,9 +91,9 @@ let friendsView: FriendsView | null = null;
 /** Закрытые ворота района, у которых стоит игрок. */
 let gate: GateView | null = null;
 
-const SCENES = ['game', 'message', 'map', 'room', 'start', 'shop', 'daily', 'wheel', 'friends', 'gate'] as const;
+const SCENES = ['game', 'message', 'map', 'room', 'start', 'shop', 'daily', 'wheel', 'friends', 'gate', 'choice'] as const;
 type SceneKey = (typeof SCENES)[number];
-function show(scene: SceneKey, data: GameSceneData | MessageData | MapData | RoomData | StartData | ShopData | DailyData | WheelData | FriendsData | GateData): void {
+function show(scene: SceneKey, data: GameSceneData | MessageData | MapData | RoomData | StartData | ShopData | DailyData | WheelData | FriendsData | GateData | ChoiceData): void {
   for (const key of SCENES) if (key !== scene && game.scene.isActive(key)) game.scene.stop(key);
   if (game.scene.isActive(scene)) game.scene.getScene(scene)!.scene.restart(data);
   else game.scene.start(scene, data);
@@ -108,7 +111,7 @@ function showMap(focus?: number): void {
   show('map', {
     theme, dpr, levelCount: progress.levelCount, maxLevel: progress.maxLevel, stars: progress.stars,
     lives: progress.lives, onPlay: (id: number) => showStart(id), ...(focus !== undefined ? { focus } : {}),
-    onShare: api ? () => void shareToChat('challenge', () => showMap(focus)) : null,
+    onShare: api ? () => chooseChatMode(() => showMap(focus)) : null,
     crystals: progress.wallet?.crystals ?? null,
     onShop: api && shopView ? () => openShop(() => showMap(focus)) : null,
     onDaily: api && metaView ? () => openDaily(() => showMap(focus)) : null,
@@ -332,7 +335,23 @@ function openShopOverlay(): Promise<WalletView | null> {
  * «Позвать в чат» / «Попросить жизнь»: сервер создаёт комнату и готовит карточку, Telegram показывает
  * выбор чата (shareMessage, Bot API 8.0). Без него — ссылка через t.me/share; вне Telegram — подсказка.
  */
-async function shareToChat(mode: 'challenge' | 'help', back: () => void): Promise<void> {
+/** PRD: игрок выбирает режим для чата — челлендж, командный фонарь или дуэль. */
+function chooseChatMode(back: () => void): void {
+  const pick = (mode: RoomMode) => () => {
+    back();
+    void shareToChat(mode, back);
+  };
+  show('choice', {
+    theme, dpr, title: t.share.title, onBack: back,
+    options: [
+      { label: '🌸 Челлендж чата', hint: 'Один уровень на 24 часа — кто наберёт больше очков', onClick: pick('challenge') },
+      { label: '🏮 Командный фонарь', hint: 'Весь чат вместе зажигает огоньки за 48 часов — сундук всем', onClick: pick('team') },
+      { label: '⚔️ Дуэль', hint: 'Один на один за час: кто пройдёт за меньшее число ходов', onClick: pick('duel') },
+    ],
+  });
+}
+
+async function shareToChat(mode: RoomMode, back: () => void): Promise<void> {
   if (!api) return;
   if (!telegram.inTelegram) {
     message(t.share.title, t.share.onlyTelegram, { button: { label: t.toMap, onClick: back } });
@@ -566,6 +585,7 @@ game.events.once('ready', () => {
   game.scene.add('wheel', WheelScene, false);
   game.scene.add('friends', FriendsScene, false);
   game.scene.add('gate', GateScene, false);
+  game.scene.add('choice', ChoiceScene, false);
   // Boot рисует текстуры и сразу передаёт управление
   game.scene.add('boot', BootScene, true, { onReady: () => void boot() });
 });

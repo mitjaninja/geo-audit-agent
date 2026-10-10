@@ -35,6 +35,11 @@ export interface Economy {
     readonly giftsPerDay: number; readonly keysNeeded: number; readonly gateWaitHours: number; readonly gatePrice: number;
     readonly referralCrystals: number; readonly referralLevel: number; readonly pushesPerDay: number;
   };
+  /** Чат-режимы: цель фонаря и его срок, срок дуэли, кристаллы топ-3 челленджа, кристаллы за подаренные жизни в день. */
+  readonly chat: {
+    readonly teamTarget: number; readonly teamHours: number; readonly duelMinutes: number;
+    readonly challengePrizes: readonly number[]; readonly helpCrystalsPerDay: number;
+  };
 }
 
 export const DEFAULT_ECONOMY: Economy = {
@@ -57,6 +62,7 @@ export const DEFAULT_ECONOMY: Economy = {
   piggy: { perWin: 3, max: 120, stars: 150, minToBreak: 30 },
   meta: { dayOffsetHours: 3, wheelSpinPrice: 9, wheelExtraSpins: 3, stuckDays: 3 },
   social: { giftsPerDay: 5, keysNeeded: 3, gateWaitHours: 24, gatePrice: 29, referralCrystals: 20, referralLevel: 10, pushesPerDay: 2 },
+  chat: { teamTarget: 2500, teamHours: 48, duelMinutes: 60, challengePrizes: [5, 3, 2], helpCrystalsPerDay: 3 },
 };
 
 /** Цена n-й докупки ходов в попытке (0 — первая); дальше последней ступени — последняя цена. */

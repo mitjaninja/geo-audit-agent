@@ -50,6 +50,9 @@ export interface MetaState {
    * Ворота районов (PRD «Помощь в разблокировке»): когда игрок дошёл до первого уровня района,
    * кто из друзей дал ключ, открыт ли район (ключи, ожидание или кристаллы).
    */
+  /** Кристаллы за подаренные в чате жизни: день и сколько уже начислено (PRD: лимит 3 в день). */
+  readonly helpDay?: number;
+  readonly helpCount?: number;
   readonly gates?: Readonly<Record<string, { readonly reachedAt: number; readonly keys: readonly number[]; readonly open?: boolean }>>;
 }
 

@@ -52,6 +52,10 @@ const toUser = (u: TgUser): TelegramUser => ({
 export const CHAT_TEXT = {
   challengeTitle: 'Челлендж чата',
   challengeDescription: (level: number) => `Уровень ${level} · кто наберёт больше очков за 24 часа`,
+  teamTitle: 'Командный фонарь',
+  teamDescription: (target: number) => `Весь чат вместе зажигает ${target} огоньков за 48 часов`,
+  duelTitle: 'Дуэль',
+  duelDescription: (level: number) => `Уровень ${level} · один на один: кто пройдёт за меньшее число ходов, за час`,
   helpTitle: 'Попросить жизнь',
   helpDescription: 'Друзья в чате подарят фонарики-сердечки',
   play: '🌸 Играть',
@@ -62,6 +66,8 @@ export const CHAT_TEXT = {
   limitText: 'Можно отправить 5 карточек в день — завтра будут новые 🌸',
   roomStart: (creator: string, level: number) =>
     `${creator} зовёт в челлендж чата: уровень ${level}. У всех одна и та же раскладка — кто наберёт больше очков? Первая попытка бесплатно.`,
+  teamStart: (creator: string) => `${creator} зажигает командный фонарь: каждая твоя партия добавляет огоньки. Цель выполнена — сундук всем, кто помог.`,
+  duelStart: (creator: string, level: number) => `${creator} вызывает на дуэль: уровень ${level}, одна попытка. Побеждает тот, кто пройдёт за меньшее число ходов.`,
   roomGone: 'Эта комната уже закрыта. Но играть можно всегда 🌸',
   giftResult: {
     ok: 'Жизнь отправлена! ❤',
@@ -92,6 +98,27 @@ export class ChatBot {
   }
 
   cardText(room: RoomRow, view: RoomView): string {
+    const creator = esc(room.creatorName || 'Игрок');
+    const hoursLeft = Math.max(0, Math.ceil((room.expiresAt - this.now()) / 3600_000));
+    if (room.mode === 'team' && view.team) {
+      const { progress, target } = view.team;
+      const filled = Math.min(10, Math.floor((progress / Math.max(1, target)) * 10));
+      const bar = '🟧'.repeat(filled) + '⬜'.repeat(10 - filled);
+      const lines = view.top.length > 0
+        ? view.top.map((r, i) => `${MEDALS[i]} ${esc(r.name || 'Игрок')} — ${fmt(r.score)}`).join('\n')
+        : 'Пока никто не зажёг ни огонька — начни первым!';
+      const footer = progress >= target ? 'Фонарь зажжён! Сундук получили все участники 🎉'
+        : view.expired ? 'Время вышло — фонарь не успели зажечь' : `Участников: ${view.players} · до конца ${hoursLeft} ч`;
+      return `🏮 <b>${CHAT_TEXT.teamTitle}</b>\n${creator} зовёт весь чат: зажжём фонарь вместе? Каждая партия добавляет огоньки.\n\n${bar}\n${fmt(Math.min(progress, target))} / ${fmt(target)} огоньков\n\n${lines}\n\n${footer}`;
+    }
+    if (room.mode === 'duel' && view.duel) {
+      const ps = view.duel.players;
+      const line = (p: (typeof ps)[number]) => `${esc(p.name || 'Игрок')} — ${p.won ? `${p.moves} ходов` : `не прошёл (${fmt(p.score)})`}`;
+      const body = ps.length === 0 ? 'Ждём соперника — первый, кто нажмёт «Играть», примет вызов!'
+        : ps.map((p) => `⚔️ ${line(p)}`).join('\n') + (ps.length === 1 && !view.expired ? '\nЖдём второго игрока…' : '');
+      const footer = view.duel.winner ? `Победил ${esc(view.duel.winner)}! 🏆` : view.expired ? 'Дуэль закончилась' : `До конца ${Math.max(1, Math.ceil((room.expiresAt - this.now()) / 60_000))} мин`;
+      return `⚔️ <b>${CHAT_TEXT.duelTitle}</b> · уровень ${room.levelId}\n${creator} вызывает: одна попытка, побеждает тот, кто пройдёт за меньшее число ходов.\n\n${body}\n\n${footer}`;
+    }
     if (room.mode === 'help') {
       const name = esc(room.creatorName || 'Игрок');
       return `🏮 <b>${name} просит жизнь!</b>\nФонарики-сердечки закончились. Нажми кнопку — и жизнь улетит к ${name}.\n\nПодарили: ${view.gifts}/${view.maxGifts}`;
@@ -99,7 +126,6 @@ export class ChatBot {
     const lines = view.top.length > 0
       ? view.top.map((r, i) => `${MEDALS[i]} ${esc(r.name || 'Игрок')} — ${fmt(r.score)}${r.boosted ? ' ⚡' : ''}`).join('\n')
       : 'Пока никто не сыграл — будь первым!';
-    const hoursLeft = Math.max(0, Math.ceil((room.expiresAt - this.now()) / 3600_000));
     const footer = view.expired ? 'Челлендж завершён 🏁' : `Сыграли: ${view.players} · до конца ${hoursLeft} ч`;
     const legend = view.top.some((r) => r.boosted) ? '\n⚡ — с бустерами' : '';
     return `🌸 <b>${CHAT_TEXT.challengeTitle}</b> · уровень ${room.levelId}\n${esc(room.creatorName || 'Игрок')} зовёт: кто наберёт больше очков? Первая попытка бесплатно.\n\n${lines}${legend}\n\n${footer}`;
@@ -116,8 +142,11 @@ export class ChatBot {
     return {
       type: 'article',
       id: room.id,
-      title: room.mode === 'help' ? CHAT_TEXT.helpTitle : CHAT_TEXT.challengeTitle,
-      description: room.mode === 'help' ? CHAT_TEXT.helpDescription : CHAT_TEXT.challengeDescription(room.levelId),
+      title: { help: CHAT_TEXT.helpTitle, challenge: CHAT_TEXT.challengeTitle, team: CHAT_TEXT.teamTitle, duel: CHAT_TEXT.duelTitle }[room.mode],
+      description: {
+        help: CHAT_TEXT.helpDescription, challenge: CHAT_TEXT.challengeDescription(room.levelId),
+        team: CHAT_TEXT.teamDescription(room.target), duel: CHAT_TEXT.duelDescription(room.levelId),
+      }[room.mode],
       input_message_content: { message_text: this.cardText(room, view), parse_mode: 'HTML' },
       reply_markup: this.cardMarkup(room),
     };
@@ -296,10 +325,13 @@ export class ChatBot {
     // приглашение друга: fr<id> — новичок запоминает, кто позвал
     if (payload?.startsWith('fr') && msg.from) await this.deps.service.login(toUser(msg.from), { startParam: payload });
     const room = payload?.startsWith('r') ? await this.deps.service.getRoom(payload) : null;
-    if (room && room.mode === 'challenge') {
+    if (room && room.mode !== 'help') {
       const url = `${this.deps.webAppUrl}?room=${encodeURIComponent(room.id)}`;
       await this.deps.api.call('sendMessage', {
-        chat_id: msg.chat.id, text: CHAT_TEXT.roomStart(room.creatorName || 'Друг', room.levelId),
+        chat_id: msg.chat.id,
+        text: room.mode === 'team' ? CHAT_TEXT.teamStart(room.creatorName || 'Друг')
+          : room.mode === 'duel' ? CHAT_TEXT.duelStart(room.creatorName || 'Друг', room.levelId)
+            : CHAT_TEXT.roomStart(room.creatorName || 'Друг', room.levelId),
         reply_markup: { inline_keyboard: [[{ text: CHAT_TEXT.play, web_app: { url } }]] },
       });
       return;
@@ -316,9 +348,8 @@ export class ChatBot {
     const user = await this.deps.service.login(toUser(q.from));
     let results: Record<string, unknown>[];
     try {
-      const challenge = await this.deps.service.createRoom(user.id, 'challenge');
-      const help = await this.deps.service.createRoom(user.id, 'help');
-      results = [await this.article(challenge), await this.article(help)];
+      results = [];
+      for (const mode of ['challenge', 'team', 'duel', 'help'] as const) results.push(await this.article(await this.deps.service.createRoom(user.id, mode)));
     } catch (e) {
       if (!(e instanceof ServiceError && e.code === 'room_limit')) throw e;
       results = [{

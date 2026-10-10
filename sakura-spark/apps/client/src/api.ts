@@ -104,9 +104,11 @@ export interface LevelFriend {
   readonly me: boolean;
 }
 
+export type RoomMode = 'challenge' | 'team' | 'duel' | 'help';
+
 export interface RoomView {
   readonly id: string;
-  readonly mode: 'challenge' | 'help';
+  readonly mode: RoomMode;
   readonly levelId: number;
   readonly creatorName: string;
   readonly expiresAt: number;
@@ -118,11 +120,18 @@ export interface RoomView {
   readonly gifts: number;
   readonly maxGifts: number;
   readonly serverTime: number;
+  /** Итог подведён: цель фонаря выполнена, дуэль сыграна или срок вышел. */
+  readonly settled?: boolean;
+  readonly team?: { readonly progress: number; readonly target: number; readonly reward: Reward } | null;
+  readonly duel?: {
+    readonly players: readonly { readonly name: string; readonly won: boolean; readonly moves: number | null; readonly score: number }[];
+    readonly winner: string | null; readonly full: boolean; readonly reward: Reward;
+  } | null;
 }
 
 export interface CreatedRoom {
   readonly roomId: string;
-  readonly mode: 'challenge' | 'help';
+  readonly mode: RoomMode;
   readonly levelId: number;
   /** Карточка для Telegram.WebApp.shareMessage; null — бот не настроен (разработка). */
   readonly preparedMessageId: string | null;
@@ -188,7 +197,7 @@ export interface Api {
   events(events: readonly ClientEvent[]): Promise<void>;
   start(levelId: number, boosters?: readonly Item[]): Promise<Attempt>;
   finish(attemptId: string, moves: readonly Move[], timedOut: boolean): Promise<FinishResult>;
-  createRoom(mode: 'challenge' | 'help'): Promise<CreatedRoom>;
+  createRoom(mode: RoomMode): Promise<CreatedRoom>;
   room(id: string): Promise<RoomView>;
   startRoom(id: string, boosters?: readonly Item[]): Promise<Attempt>;
   /** «+5 ходов»: сервер проигрывает ходы, проверяет, что они кончились, и списывает кристаллы. */

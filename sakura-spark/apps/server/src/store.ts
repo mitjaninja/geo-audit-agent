@@ -50,7 +50,8 @@ export interface LevelProgress {
   readonly lossStreak: number;
 }
 
-export type RoomMode = 'challenge' | 'help';
+/** Режимы чата (PRD): челлендж, командный фонарь, дуэль, помощь жизнью. */
+export type RoomMode = 'challenge' | 'team' | 'duel' | 'help';
 
 export interface RoomRow {
   readonly id: string;
@@ -64,6 +65,11 @@ export interface RoomRow {
   /** Карточка в чате: её редактирует бот (рейтинг, подарки). null — пока неизвестна. */
   readonly inlineMessageId: string | null;
   readonly gifts: number;
+  /** Командный фонарь: сколько огоньков зажгли вместе и сколько нужно. */
+  readonly progress: number;
+  readonly target: number;
+  /** Награды комнаты выданы (цель фонаря, итог дуэли или челленджа). */
+  readonly settled: boolean;
 }
 
 export interface RoomResult {
@@ -75,6 +81,10 @@ export interface RoomResult {
   readonly attempts: number;
   /** Счёт поставлен с бустерами — в рейтинге чата помечается значком. */
   readonly boosted: boolean;
+  /** Дуэль: меньше всего ходов среди выигранных попыток; null — не выиграл. */
+  readonly moves: number | null;
+  /** Командный фонарь: вклад игрока (огоньки). */
+  readonly contributed: number;
 }
 
 /** Кошелёк игрока: всё, что меняется покупками и тратами, — читается и пишется одной транзакцией. */
@@ -242,6 +252,10 @@ export interface Store {
    * и лимит не исчерпан, и меняет жизни просящего функцией giveLife.
    */
   addGift(roomId: string, giverId: number, now: number, maxGifts: number, giveLife: (l: LivesState) => LivesState): Promise<'ok' | 'already' | 'full'>;
+  addRoomProgress(roomId: string, n: number): Promise<{ progress: number; target: number }>;
+  settleRoom(roomId: string): Promise<boolean>;
+  roomsToSettle(now: number, limit: number): Promise<RoomRow[]>;
+  roomPlayers(roomId: string): Promise<number[]>;
   /** Удалить истёкшие комнаты, в которые никто не играл. */
   pruneRooms(now: number): Promise<number>;
   /** Закрыть попытку, если она ещё открыта. false — уже закрыта (повторный запрос). */
@@ -402,6 +416,13 @@ const MIGRATIONS: readonly string[] = [
   );
   CREATE INDEX mail_to ON mail (to_id, status);
   CREATE INDEX mail_from_day ON mail (from_id, day, kind);`,
+  // v7: командный фонарь и дуэль — общий прогресс комнаты, итог, ходы и вклад игроков
+  `ALTER TABLE rooms ADD COLUMN progress INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE rooms ADD COLUMN target INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE rooms ADD COLUMN settled INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE room_results ADD COLUMN moves INTEGER;
+  ALTER TABLE room_results ADD COLUMN contributed INTEGER NOT NULL DEFAULT 0;
+  CREATE INDEX rooms_settle ON rooms (settled, expires_at);`,
 ];
 
 /** Версия схемы после всех миграций. */
@@ -464,6 +485,9 @@ const toRoom = (r: Row): RoomRow => ({
   expiresAt: Number(r.expires_at),
   inlineMessageId: (r.inline_message_id as string | null) ?? null,
   gifts: Number(r.gifts),
+  progress: Number(r.progress ?? 0),
+  target: Number(r.target ?? 0),
+  settled: Number(r.settled ?? 0) === 1,
 });
 
 export class SqliteStore implements Store {
@@ -582,9 +606,9 @@ export class SqliteStore implements Store {
   }
 
   async createRoom(r: RoomRow): Promise<void> {
-    this.db.prepare(`INSERT INTO rooms (id, mode, creator_id, creator_name, level_id, seed, created_at, expires_at, inline_message_id, gifts)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(r.id, r.mode, r.creatorId, r.creatorName, r.levelId, r.seed, r.createdAt, r.expiresAt, r.inlineMessageId, r.gifts);
+    this.db.prepare(`INSERT INTO rooms (id, mode, creator_id, creator_name, level_id, seed, created_at, expires_at, inline_message_id, gifts, target)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(r.id, r.mode, r.creatorId, r.creatorName, r.levelId, r.seed, r.createdAt, r.expiresAt, r.inlineMessageId, r.gifts, r.target);
   }
 
   async getRoom(id: string): Promise<RoomRow | null> {
@@ -609,10 +633,12 @@ export class SqliteStore implements Store {
 
   async recordRoomResult(roomId: string, x: Omit<RoomResult, 'attempts'>, now: number): Promise<void> {
     this.db.prepare(`
-      INSERT INTO room_results (room_id, user_id, first_name, best_score, stars, won, attempts, updated_at, boosted)
-      VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+      INSERT INTO room_results (room_id, user_id, first_name, best_score, stars, won, attempts, updated_at, boosted, moves, contributed)
+      VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
       ON CONFLICT (room_id, user_id) DO UPDATE SET
         first_name = excluded.first_name,
+        moves = CASE WHEN moves IS NULL THEN excluded.moves WHEN excluded.moves IS NULL THEN moves ELSE MIN(moves, excluded.moves) END,
+        contributed = contributed + excluded.contributed,
         -- значок бустера — у того результата, что стоит в рейтинге (лучшего)
         boosted = CASE WHEN excluded.best_score > best_score THEN excluded.boosted ELSE boosted END,
         best_score = MAX(best_score, excluded.best_score),
@@ -620,7 +646,7 @@ export class SqliteStore implements Store {
         won = MAX(won, excluded.won),
         attempts = attempts + 1,
         updated_at = excluded.updated_at
-    `).run(roomId, x.userId, x.firstName, x.bestScore, x.stars, x.won ? 1 : 0, now, x.boosted ? 1 : 0);
+    `).run(roomId, x.userId, x.firstName, x.bestScore, x.stars, x.won ? 1 : 0, now, x.boosted ? 1 : 0, x.moves, x.contributed);
   }
 
   async getRoomResults(roomId: string): Promise<RoomResult[]> {
@@ -629,7 +655,31 @@ export class SqliteStore implements Store {
       .map((r) => ({
         userId: Number(r.user_id), firstName: String(r.first_name), bestScore: Number(r.best_score),
         stars: Number(r.stars), won: Number(r.won) === 1, attempts: Number(r.attempts), boosted: Number(r.boosted) === 1,
+        moves: r.moves === null || r.moves === undefined ? null : Number(r.moves), contributed: Number(r.contributed ?? 0),
       }));
+  }
+
+  /** Командный фонарь: добавить огоньки, вернуть новый прогресс. */
+  async addRoomProgress(roomId: string, n: number): Promise<{ progress: number; target: number }> {
+    this.db.prepare('UPDATE rooms SET progress = progress + ? WHERE id = ?').run(n, roomId);
+    const r = this.db.prepare('SELECT progress, target FROM rooms WHERE id = ?').get(roomId) as Row;
+    return { progress: Number(r.progress), target: Number(r.target) };
+  }
+
+  /** Пометить комнату подведённой: true — ровно один раз (награды не выдаются дважды). */
+  async settleRoom(roomId: string): Promise<boolean> {
+    return Number(this.db.prepare('UPDATE rooms SET settled = 1 WHERE id = ? AND settled = 0').run(roomId).changes) > 0;
+  }
+
+  /** Истёкшие комнаты с игроками, итог которых ещё не подведён. */
+  async roomsToSettle(now: number, limit: number): Promise<RoomRow[]> {
+    return (this.db.prepare(`SELECT * FROM rooms r WHERE settled = 0 AND expires_at <= ? AND mode != 'help'
+      AND EXISTS (SELECT 1 FROM room_results x WHERE x.room_id = r.id) LIMIT ?`).all(now, limit) as Row[]).map(toRoom);
+  }
+
+  /** Сколько разных игроков начинали попытки в комнате (дуэль — не больше двух). */
+  async roomPlayers(roomId: string): Promise<number[]> {
+    return (this.db.prepare('SELECT DISTINCT user_id FROM attempts WHERE room_id = ?').all(roomId) as Row[]).map((r) => Number(r.user_id));
   }
 
   async addGift(roomId: string, giverId: number, now: number, maxGifts: number, giveLife: (l: LivesState) => LivesState): Promise<'ok' | 'already' | 'full'> {

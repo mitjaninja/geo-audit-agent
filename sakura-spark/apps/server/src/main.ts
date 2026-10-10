@@ -19,8 +19,12 @@ const service = new GameService({
   store, levels, onRoomChanged: (id) => chat?.scheduleRefresh(id), log,
   sendPush: (userId, text) => (chat ? chat.push(userId, text) : Promise.resolve(false)),
 });
-// пуши «жизни восстановились» — раз в 5 минут
-setInterval(() => void service.pushLivesRefilled().catch((e) => log(`lives push: ${String(e)}`)), 5 * 60_000).unref();
+// раз в 5 минут: пуши «жизни восстановились»
+// и итоги истёкших комнат чата (награды челленджа, дуэли)
+setInterval(() => {
+  void service.pushLivesRefilled().catch((e) => log(`lives push: ${String(e)}`));
+  void service.settleExpiredRooms().catch((e) => log(`room settle: ${String(e)}`));
+}, 5 * 60_000).unref();
 const report = async () => buildReport(store, await service.remoteConfig(), Date.now());
 const webAppUrl = `${config.publicUrl.replace(/\/$/, '')}/`;
 const botApi = config.botToken ? new BotApi(config.botToken) : null;

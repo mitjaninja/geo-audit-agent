@@ -226,7 +226,36 @@ try {
     const { page, errors } = await open('?devUser=12');
     await mapReady(page);
     await clickCanvas(page, (await g(page, 'm.shareButton')) as { x: number; y: number });
+    // сначала выбор режима: челлендж, командный фонарь, дуэль
+    await page.waitForFunction(() => (globalThis as any).__sakuraChoice?.scene.isActive() && (globalThis as any).__sakuraChoice.buttons.length === 4);
+    await page.waitForTimeout(200);
+    await page.screenshot({ path: `${OUT}/24-chat-modes.png` });
+    await clickCanvas(page, (await g(page, 'globalThis.__sakuraChoice.buttons.find((b) => b.label.includes("Дуэль"))')) as { x: number; y: number });
     await page.waitForFunction(() => (globalThis as any).__sakuraMessage?.scene.isActive());
+    assert.deepEqual(errors, []);
+    await page.context().close();
+  }
+
+  console.log('chat modes: team lantern progress and a duel accepted from the chat link');
+  {
+    await service.login({ id: 40, firstName: 'Пон' });
+    await service.login({ id: 41, firstName: 'Сэцу' });
+    const team = await service.createRoom(40, 'team');
+    (store as any).db.prepare('UPDATE rooms SET progress = 900 WHERE id = ?').run(team.id);
+    const duel = await service.createRoom(40, 'duel');
+    const { page, errors } = await open(`?devUser=41&room=${team.id}`);
+    const roomReady = () => page.waitForFunction(() => (globalThis as any).__sakuraRoom?.scene.isActive() && (globalThis as any).__sakuraRoom.buttons.length > 0);
+    await roomReady();
+    await page.waitForTimeout(200);
+    await page.screenshot({ path: `${OUT}/25-team-room.png` });
+    await page.goto(`http://localhost:4173/?devUser=41&room=${duel.id}`);
+    await roomReady();
+    await page.waitForTimeout(200);
+    await page.screenshot({ path: `${OUT}/26-duel-room.png` });
+    await clickCanvas(page, (await g(page, 'globalThis.__sakuraRoom.buttons.find((b) => b.label === "Принять вызов")')) as { x: number; y: number });
+    await startLevel(page);
+    await gameReady(page);
+    assert.deepEqual((await store.roomPlayers(duel.id)), [41]);
     assert.deepEqual(errors, []);
     await page.context().close();
   }
