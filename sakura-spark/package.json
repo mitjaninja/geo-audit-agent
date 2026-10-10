@@ -1,0 +1,30 @@
+{
+  "name": "sakura-spark",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm test --workspaces --if-present",
+    "autotest": "npm run -s autotest -w @sakura/sim --",
+    "dev": "npm run dev -w @sakura/client",
+    "build": "npm run build -w @sakura/client",
+    "smoke": "npm run smoke -w @sakura/client",
+    "server": "npm start -w @sakura/server",
+    "server:dev": "DEV_AUTH=1 npm start -w @sakura/server",
+    "setup-bot": "npm run setup-bot -w @sakura/server",
+    "tune": "npm run -s tune -w @sakura/sim --",
+    "report": "npm run -s report -w @sakura/server"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "tsx": "^4.23.15",
+    "typescript": "5.9"
+  }
+}

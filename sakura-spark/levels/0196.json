@@ -1,0 +1,42 @@
+{
+  "id": 196,
+  "width": 9,
+  "height": 9,
+  "colors": 6,
+  "moves": 45,
+  "difficulty": "normal",
+  "goals": [
+    { "type": "lanterns", "count": 2 }
+  ],
+  "stars": [5300, 8800, 12300],
+  "intro": [
+    { "speaker": "mika", "text": "Сердце фестиваля! Ещё немного — и сакура снова зацветёт.", "i18n": {"en": "The Heart of the Festival! Just a little more — and the sakura will bloom again.", "es": "¡El Corazón del Festival! Un poco más — y el sakura volverá a florecer.", "pt": "O Coração do Festival! Só mais um pouco — e a sakura vai florescer de novo."} }
+  ],
+  "shape": [
+    "#########",
+    "#########",
+    "#########",
+    "_#######_",
+    "_##__###_",
+    "_#######_",
+    "_#######_",
+    "#########",
+    "#########"
+  ],
+  "portals": [
+    { "from": [3,3], "to": [5,4] },
+    { "from": [3,4], "to": [5,3] }
+  ],
+  "lanterns": { "total": 2, "maxOnBoard": 2, "spawnChance": 0.55 },
+  "blockers": [
+    ".........",
+    ".........",
+    ".........",
+    ".........",
+    ".........",
+    ".ii..iii.",
+    ".........",
+    ".........",
+    "........."
+  ]
+}

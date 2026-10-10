@@ -1,0 +1,20 @@
+{
+  "name": "@sakura/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "dependencies": {
+    "@sakura/core": "*",
+    "tsx": "^4.23.15"
+  },
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning --import tsx src/main.ts",
+    "setup-bot": "node --import tsx scripts/setup-bot.ts",
+    "typecheck": "tsc --noEmit -p .",
+    "test": "node --disable-warning=ExperimentalWarning --import tsx --test test/*.test.ts",
+    "report": "node --disable-warning=ExperimentalWarning --import tsx scripts/report.ts"
+  }
+}

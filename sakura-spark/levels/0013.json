@@ -1,0 +1,25 @@
+{
+  "id": 13,
+  "width": 8,
+  "height": 8,
+  "colors": 5,
+  "moves": 14,
+  "difficulty": "normal",
+  "blockers": [
+    "........",
+    "........",
+    ".k....k.",
+    "........",
+    "........",
+    ".K....K.",
+    "........",
+    "........"
+  ],
+  "goals": [
+    { "type": "collect", "color": 4, "count": 22 }
+  ],
+  "intro": [
+    { "speaker": "ren", "text": "Запертые сундуки! Собирай рядом — замки слетят, а внутри найдётся луч или бомба.", "i18n": {"en": "Locked chests! Match next to them — the locks pop off, and inside you’ll find a beam or a bomb.", "es": "¡Cofres cerrados! Combina a su lado — los candados saltan y dentro hay un rayo o una bomba.", "pt": "Baús trancados! Combine ao lado — as trancas caem, e dentro há um raio ou uma bomba."} }
+  ],
+  "stars": [3400, 5700, 8100]
+}

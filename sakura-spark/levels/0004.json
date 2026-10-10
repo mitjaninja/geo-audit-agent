@@ -1,0 +1,15 @@
+{
+  "id": 4,
+  "width": 8,
+  "height": 8,
+  "colors": 5,
+  "moves": 16,
+  "difficulty": "normal",
+  "goals": [
+    { "type": "score", "target": 4000 }
+  ],
+  "intro": [
+    { "speaker": "pon", "text": "Собери фигуру буквой Г или Т — выйдет Бумажная бомба. Бум — и квадрат 3×3 чист!", "i18n": {"en": "Make an L or T shape to get a Paper bomb. Boom — and a 3×3 square is clear!", "es": "Forma una L o una T y saldrá una Bomba de papel. ¡Bum — y un cuadrado de 3×3 queda limpio!", "pt": "Forme um L ou um T para ganhar uma Bomba de papel. Bum — e um quadrado 3×3 fica limpo!"} }
+  ],
+  "stars": [4000, 5200, 6400]
+}

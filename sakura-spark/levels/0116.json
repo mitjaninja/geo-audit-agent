@@ -1,0 +1,23 @@
+{
+  "id": 116,
+  "width": 9,
+  "height": 9,
+  "colors": 6,
+  "moves": 60,
+  "difficulty": "normal",
+  "goals": [
+    { "type": "fog" }
+  ],
+  "stars": [9400, 15700, 19500],
+  "blockers": [
+    ".........",
+    ".........",
+    ".........",
+    ".........",
+    ".........",
+    ".........",
+    "fff.f.fff",
+    "fff.ff.f.",
+    "fffffffff"
+  ]
+}

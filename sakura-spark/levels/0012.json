@@ -1,0 +1,16 @@
+{
+  "id": 12,
+  "width": 8,
+  "height": 8,
+  "colors": 5,
+  "moves": 300,
+  "timeLimit": 90,
+  "difficulty": "normal",
+  "goals": [
+    { "type": "score", "target": 6800 }
+  ],
+  "intro": [
+    { "speaker": "ren", "text": "Фестиваль не ждёт! Здесь нет счёта ходов — только 90 секунд. Успеешь набрать очки?", "i18n": {"en": "The festival won’t wait! No move limit here — just 90 seconds. Can you score in time?", "es": "¡El festival no espera! Aquí no hay límite de movimientos — solo 90 segundos. ¿Llegarás a sumar puntos?", "pt": "O festival não espera! Aqui não há limite de jogadas — só 90 segundos. Consegue pontuar a tempo?"} }
+  ],
+  "stars": [6800, 12500, 17400]
+}

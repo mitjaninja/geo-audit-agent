@@ -1,0 +1,24 @@
+{
+  "id": 149,
+  "width": 9,
+  "height": 9,
+  "colors": 6,
+  "moves": 42,
+  "difficulty": "normal",
+  "goals": [
+    { "type": "lanterns", "count": 2 }
+  ],
+  "stars": [4900, 8100, 10900],
+  "lanterns": { "total": 2, "maxOnBoard": 2, "spawnChance": 0.55 },
+  "blockers": [
+    ".........",
+    ".........",
+    ".....m...",
+    ".........",
+    "....m....",
+    ".......m.",
+    ".....m...",
+    ".........",
+    "........."
+  ]
+}

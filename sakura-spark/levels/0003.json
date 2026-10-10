@@ -1,0 +1,15 @@
+{
+  "id": 3,
+  "width": 7,
+  "height": 7,
+  "colors": 4,
+  "moves": 12,
+  "difficulty": "normal",
+  "goals": [
+    { "type": "collect", "color": 0, "count": 30 }
+  ],
+  "intro": [
+    { "speaker": "mika", "text": "Храму нужны звёзды. Собери их — счётчик сверху покажет, сколько осталось.", "i18n": {"en": "The temple needs stars. Collect them — the counter at the top shows how many are left.", "es": "El templo necesita estrellas. Recógelas — el contador de arriba muestra cuántas faltan.", "pt": "O templo precisa de estrelas. Junte-as — o contador lá em cima mostra quantas faltam."} }
+  ],
+  "stars": [4600, 7700, 10500]
+}

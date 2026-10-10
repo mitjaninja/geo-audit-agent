@@ -1,0 +1,48 @@
+{
+  "id": 136,
+  "width": 9,
+  "height": 9,
+  "colors": 5,
+  "moves": 30,
+  "difficulty": "normal",
+  "goals": [
+    { "type": "jelly" }
+  ],
+  "stars": [10700, 17900, 23500],
+  "intro": [
+    { "speaker": "pon", "text": "Чайные холмы. Дайфуку тут повсюду — не объешься!", "i18n": {"en": "The Tea Hills. Daifuku everywhere — don’t overeat!", "es": "Las Colinas del Té. Hay daifuku por todas partes — ¡no te empaches!", "pt": "As Colinas do Chá. Tem daifuku por todo lado — não vá comer demais!"} }
+  ],
+  "shape": [
+    "#########",
+    "#########",
+    "#########",
+    "_#######_",
+    "_#######_",
+    "_#######_",
+    "_#######_",
+    "#########",
+    "#########"
+  ],
+  "jelly": [
+    "000000000",
+    "000000000",
+    "000000000",
+    "_0000000_",
+    "_1111111_",
+    "_1111111_",
+    "_2222222_",
+    "222222222",
+    "222222222"
+  ],
+  "blockers": [
+    ".........",
+    ".........",
+    ".........",
+    "...KK....",
+    "...KK....",
+    ".........",
+    ".........",
+    ".........",
+    "........."
+  ]
+}

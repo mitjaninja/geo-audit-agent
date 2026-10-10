@@ -1,0 +1,16 @@
+{
+  "id": 87,
+  "width": 8,
+  "height": 8,
+  "colors": 5,
+  "moves": 300,
+  "difficulty": "normal",
+  "goals": [
+    { "type": "score", "target": 11800 }
+  ],
+  "stars": [11200, 14600, 17800],
+  "timeLimit": 75,
+  "intro": [
+    { "speaker": "ren", "text": "Фестивальный забег: набери очки, пока горят песочные часы!", "i18n": {"en": "Festival dash: score as much as you can while the hourglass runs!", "es": "Carrera del festival: ¡suma puntos mientras corre el reloj de arena!", "pt": "Corrida do festival: faça pontos enquanto a ampulheta corre!"} }
+  ]
+}

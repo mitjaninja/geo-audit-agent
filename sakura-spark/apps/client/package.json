@@ -1,0 +1,22 @@
+{
+  "name": "@sakura/client",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit -p .",
+    "test": "node --import tsx --test test/*.test.ts",
+    "smoke": "vite build && node --disable-warning=ExperimentalWarning --import tsx e2e/smoke.ts"
+  },
+  "dependencies": {
+    "@sakura/core": "*",
+    "phaser": "3.90.0"
+  },
+  "devDependencies": {
+    "vite": "6.4.4",
+    "playwright-core": "1.56.1"
+  }
+}

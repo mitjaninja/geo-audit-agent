@@ -1,0 +1,14 @@
+export * from './types.ts';
+export { Rng } from './rng.ts';
+export { Board } from './board.ts';
+export { findMatches, hasMatchAt } from './match.ts';
+export { findValidSwaps, isAdjacent, isValidSwap, swapIsCombo, swapMakesMatch, swapPieces } from './moves.ts';
+export { anchorFor, blastArea, comboKind, specialForGroup } from './specials.ts';
+export { BLOCKER_CHARS, damage, layersOf, occupiesCell } from './blockers.ts';
+export type { Blocker, BlockerKind, Portal } from './blockers.ts';
+export { assistForLossStreak, BLOCKER_POINTS, START_EXTRA_MOVES, FINALE_BONUS_PER_MOVE, Match3Game, POINTS_PER_PIECE, SPECIAL_BONUS } from './game.ts';
+export { starsFor } from './goals.ts';
+export type { Goal, GoalProgress, LanternRule } from './goals.ts';
+export { gameOptionsFromLevel, LevelError, lintLevel, parseLevel } from './level.ts';
+export type { Difficulty, IntroLine, LevelDef, Speaker, Translations, Tutorial } from './level.ts';
+export type { GameOptions, GameStatus, StartBoosters } from './game.ts';

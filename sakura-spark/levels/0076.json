@@ -1,0 +1,37 @@
+{
+  "id": 76,
+  "width": 8,
+  "height": 8,
+  "colors": 5,
+  "moves": 17,
+  "difficulty": "normal",
+  "goals": [
+    { "type": "lanterns", "count": 2 },
+    { "type": "fog" }
+  ],
+  "stars": [4000, 6700, 9900],
+  "intro": [
+    { "speaker": "pon", "text": "Сад фонтанов! Вода смывает туман, а мы смоем остальное.", "i18n": {"en": "The Fountain Garden! The water washes away the fog, and we’ll wash away the rest.", "es": "¡El Jardín de Fuentes! El agua se lleva la niebla, y nosotros nos llevaremos el resto.", "pt": "O Jardim das Fontes! A água leva a névoa embora, e nós levamos o resto."} }
+  ],
+  "shape": [
+    "########",
+    "########",
+    "########",
+    "########",
+    "########",
+    "########",
+    "_######_",
+    "__####__"
+  ],
+  "lanterns": { "total": 2, "maxOnBoard": 2, "spawnChance": 0.55 },
+  "blockers": [
+    "........",
+    "........",
+    "........",
+    "..KK....",
+    "..KK....",
+    "........",
+    "..f.fff.",
+    "....f..."
+  ]
+}

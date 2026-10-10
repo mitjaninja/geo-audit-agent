@@ -1,0 +1,15 @@
+{
+  "id": 2,
+  "width": 7,
+  "height": 7,
+  "colors": 4,
+  "moves": 13,
+  "difficulty": "normal",
+  "goals": [
+    { "type": "score", "target": 3000 }
+  ],
+  "intro": [
+    { "speaker": "pon", "text": "Я тануки Пон! Секрет: собери 4 в ряд — получишь Луч фонаря. Он сметает целую линию!", "i18n": {"en": "I’m Pon the tanuki! Secret: match 4 in a row to get a Lantern beam. It clears a whole line!", "es": "¡Soy Pon, el tanuki! Secreto: junta 4 en fila y tendrás un Rayo de farol. ¡Barre una línea entera!", "pt": "Eu sou o Pon, o tanuki! Segredo: junte 4 em fila e ganhe um Raio de lanterna. Ele limpa uma linha inteira!"} }
+  ],
+  "stars": [3000, 4700, 6700]
+}

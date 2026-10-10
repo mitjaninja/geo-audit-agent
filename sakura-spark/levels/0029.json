@@ -1,0 +1,14 @@
+{
+  "id": 29,
+  "width": 9,
+  "height": 9,
+  "colors": 6,
+  "moves": 17,
+  "difficulty": "normal",
+  "goals": [
+    { "type": "collect", "color": 0, "count": 18 },
+    { "type": "collect", "color": 2, "count": 18 },
+    { "type": "collect", "color": 4, "count": 18 }
+  ],
+  "stars": [3300, 5500, 7500]
+}
