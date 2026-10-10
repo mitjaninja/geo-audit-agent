@@ -9,7 +9,7 @@ export interface LivesView {
 }
 
 export type Item = 'beamBomb' | 'rainbow' | 'extraMoves' | 'hammer' | 'freeSwap' | 'shuffle';
-export type ProductId = 'pack10' | 'pack50' | 'pack100' | 'pack250' | 'pack500' | 'starter' | 'piggy';
+export type ProductId = 'pass' | 'pack10' | 'pack50' | 'pack100' | 'pack250' | 'pack500' | 'starter' | 'piggy';
 
 export interface WalletView {
   readonly crystals: number;
@@ -40,6 +40,8 @@ export interface Me {
   readonly serverTime: number;
   /** Закрытые ворота нового района, у которых стоит игрок. */
   readonly gate?: GateView | null;
+  /** Серия побед на карте. */
+  readonly streak?: number;
   /** Ходы и время уровней, сдвинутые remote config на сервере. */
   readonly levelOverrides?: Record<string, { readonly moves?: number; readonly timeLimit?: number }>;
 }
@@ -53,6 +55,7 @@ export interface Attempt {
   /** Параметры партии от сервера: без них реплей на сервере не сойдётся. */
   readonly assist: number;
   readonly startBoosters: readonly Item[];
+  readonly streak?: number;
 }
 
 export interface FinishResult {
@@ -67,6 +70,10 @@ export interface FinishResult {
   readonly room?: { readonly id: string; readonly place: number; readonly players: number };
   /** Победа привела к воротам нового района. */
   readonly gate?: GateView;
+  /** Выпала карточка коллекции. */
+  readonly drop?: { readonly card: string; readonly title: string };
+  /** Награда за уровень фестиваля. */
+  readonly festivalReward?: Reward;
 }
 
 /** Ворота района: 3 ключа от друзей, или подождать до unlockAt, или price кристаллов. */
@@ -94,6 +101,38 @@ export interface FriendsView {
   readonly inbox: readonly MailItem[];
   /** Ссылка-приглашение (fr<id>); null — бот не настроен. */
   readonly inviteLink: string | null;
+}
+
+export interface RaceView {
+  readonly race: {
+    readonly id: number; readonly endsAt: number; readonly target: number; readonly ended: boolean; readonly gathering: boolean;
+    readonly members: readonly { readonly name: string; readonly progress: number; readonly place: number | null; readonly me: boolean }[];
+  } | null;
+  readonly canJoin: boolean;
+  readonly target: number;
+  readonly size: number;
+  readonly hours: number;
+  readonly prizes: readonly number[];
+  readonly serverTime: number;
+}
+
+export interface SeasonView {
+  readonly pass: {
+    readonly season: number; readonly endsAt: number; readonly points: number; readonly pointsPerTier: number; readonly tier: number;
+    readonly premium: boolean; readonly passUntil: number | null; readonly price: number;
+    readonly tiers: readonly { readonly tier: number; readonly free: Reward; readonly premium: Reward; readonly freeClaimed: boolean; readonly premiumClaimed: boolean }[];
+  };
+  readonly collection: {
+    readonly sets: readonly { readonly id: string; readonly title: string; readonly frame: string; readonly cards: readonly { readonly id: string; readonly title: string; readonly count: number }[] }[];
+    readonly extra: readonly { readonly id: string; readonly title: string; readonly count: number }[];
+    readonly frames: readonly { readonly id: string; readonly title: string; readonly color: number }[];
+    readonly frame: string | null;
+  };
+  readonly festival: {
+    readonly id: string; readonly title: string; readonly intro: string; readonly endsAt: number;
+    readonly levels: readonly number[]; readonly done: number; readonly stepReward: Reward; readonly finalReward: Reward;
+  } | null;
+  readonly serverTime: number;
 }
 
 export interface LevelFriend {
@@ -143,6 +182,7 @@ export interface Reward {
   readonly items?: Partial<Record<Item, number>>;
   readonly infiniteLivesMs?: number;
   readonly card?: string;
+  readonly frame?: string;
 }
 
 export type TaskKind = 'win' | 'stars' | 'threeStars' | 'booster' | 'score' | 'room';
@@ -221,6 +261,12 @@ export interface Api {
   levelFriends(levelId: number): Promise<{ top: LevelFriend[] }>;
   askKeys(): Promise<{ asked: number }>;
   buyGate(): Promise<{ wallet: WalletView }>;
+  race(): Promise<RaceView>;
+  joinRace(): Promise<RaceView>;
+  raceSeen(): Promise<void>;
+  season(): Promise<SeasonView>;
+  claimPass(tier: number, track: 'free' | 'premium'): Promise<MetaClaim>;
+  setFrame(frame: string | null): Promise<{ frame: string | null }>;
 }
 
 export function createApi(auth: Auth, base = '', fetchImpl: typeof fetch = (...a) => fetch(...a)): Api {
@@ -262,5 +308,11 @@ export function createApi(auth: Auth, base = '', fetchImpl: typeof fetch = (...a
     levelFriends: (levelId) => call('GET', `/api/levels/${levelId}/friends`),
     askKeys: () => call('POST', '/api/gate/ask'),
     buyGate: () => call('POST', '/api/gate/buy'),
+    race: () => call<RaceView>('GET', '/api/race'),
+    joinRace: () => call<RaceView>('POST', '/api/race/join'),
+    raceSeen: () => call<unknown>('POST', '/api/race/seen').then(() => undefined),
+    season: () => call<SeasonView>('GET', '/api/season'),
+    claimPass: (tier, track) => call('POST', '/api/pass/claim', { tier, track }),
+    setFrame: (frame) => call('POST', '/api/frame', { frame }),
   };
 }

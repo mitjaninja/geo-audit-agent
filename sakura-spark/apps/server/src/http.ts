@@ -116,6 +116,18 @@ export function createApp(deps: HttpDeps): Server {
     if (method === 'GET' && path === '/api/gate') return send(res, 200, { gate: await deps.service.gate(user.id) });
     if (method === 'POST' && path === '/api/gate/ask') return send(res, 200, await deps.service.askKeys(user.id));
     if (method === 'POST' && path === '/api/gate/buy') return send(res, 200, await deps.service.buyGate(user.id));
+    if (method === 'GET' && path === '/api/race') return send(res, 200, await deps.service.raceView(user.id));
+    if (method === 'GET' && path === '/api/season') return send(res, 200, await deps.service.seasonView(user.id));
+    if (method === 'POST' && path === '/api/pass/claim') {
+      const { tier, track } = await readJson(req);
+      return send(res, 200, await deps.service.claimPass(user.id, tier, track));
+    }
+    if (method === 'POST' && path === '/api/frame') return send(res, 200, await deps.service.setFrame(user.id, (await readJson(req)).frame ?? null));
+    if (method === 'POST' && path === '/api/race/join') return send(res, 200, await deps.service.joinRace(user.id));
+    if (method === 'POST' && path === '/api/race/seen') {
+      await deps.service.raceSeen(user.id);
+      return send(res, 200, { ok: true });
+    }
     if (path.startsWith('/api/meta')) {
       if (method === 'GET' && path === '/api/meta') return send(res, 200, await deps.service.metaView(user.id));
       if (method === 'POST' && path === '/api/meta/login') return send(res, 200, await deps.service.claimLogin(user.id));

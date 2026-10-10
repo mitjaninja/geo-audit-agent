@@ -9,6 +9,6 @@ export type { Blocker, BlockerKind, Portal } from './blockers.ts';
 export { assistForLossStreak, BLOCKER_POINTS, START_EXTRA_MOVES, FINALE_BONUS_PER_MOVE, Match3Game, POINTS_PER_PIECE, SPECIAL_BONUS } from './game.ts';
 export { starsFor } from './goals.ts';
 export type { Goal, GoalProgress, LanternRule } from './goals.ts';
-export { gameOptionsFromLevel, LevelError, parseLevel } from './level.ts';
-export type { Difficulty, IntroLine, LevelDef, Speaker, Tutorial } from './level.ts';
+export { gameOptionsFromLevel, LevelError, lintLevel, parseLevel } from './level.ts';
+export type { Difficulty, IntroLine, LevelDef, Speaker, Translations, Tutorial } from './level.ts';
 export type { GameOptions, GameStatus, StartBoosters } from './game.ts';

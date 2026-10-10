@@ -1,6 +1,7 @@
 import { ConfigError } from './remote.ts';
 import type { BotApi } from './bot.ts';
-import { BOT_TEXT } from './bot.ts';
+import { TEXTS, textsFor } from './texts.ts';
+import type { Texts } from './texts.ts';
 import type { TelegramUser } from './auth.ts';
 import { ServiceError } from './service.ts';
 import type { GameService, RoomView } from './service.ts';
@@ -42,43 +43,14 @@ interface Update {
 }
 
 const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-const fmt = (n: number) => n.toLocaleString('ru-RU').replace(/ /g, ' ');
 const MEDALS = ['🥇', '🥈', '🥉', '4.', '5.'];
 const toUser = (u: TgUser): TelegramUser => ({
   id: u.id, firstName: u.first_name ?? '',
   ...(u.username ? { username: u.username } : {}), ...(u.language_code ? { languageCode: u.language_code } : {}),
 });
 
-export const CHAT_TEXT = {
-  challengeTitle: 'Челлендж чата',
-  challengeDescription: (level: number) => `Уровень ${level} · кто наберёт больше очков за 24 часа`,
-  teamTitle: 'Командный фонарь',
-  teamDescription: (target: number) => `Весь чат вместе зажигает ${target} огоньков за 48 часов`,
-  duelTitle: 'Дуэль',
-  duelDescription: (level: number) => `Уровень ${level} · один на один: кто пройдёт за меньшее число ходов, за час`,
-  helpTitle: 'Попросить жизнь',
-  helpDescription: 'Друзья в чате подарят фонарики-сердечки',
-  play: '🌸 Играть',
-  top: '🏆 Рейтинг',
-  gift: '❤ Подарить жизнь',
-  playGame: '🌸 Играть в Sakura Spark',
-  limitTitle: 'На сегодня хватит карточек',
-  limitText: 'Можно отправить 5 карточек в день — завтра будут новые 🌸',
-  roomStart: (creator: string, level: number) =>
-    `${creator} зовёт в челлендж чата: уровень ${level}. У всех одна и та же раскладка — кто наберёт больше очков? Первая попытка бесплатно.`,
-  teamStart: (creator: string) => `${creator} зажигает командный фонарь: каждая твоя партия добавляет огоньки. Цель выполнена — сундук всем, кто помог.`,
-  duelStart: (creator: string, level: number) => `${creator} вызывает на дуэль: уровень ${level}, одна попытка. Побеждает тот, кто пройдёт за меньшее число ходов.`,
-  roomGone: 'Эта комната уже закрыта. Но играть можно всегда 🌸',
-  giftResult: {
-    ok: 'Жизнь отправлена! ❤',
-    already: 'Ты уже дарил жизнь по этой просьбе',
-    full: 'Уже подарили 5 жизней — спасибо!',
-    own: 'Себе подарить нельзя 🙂',
-    expired: 'Просьба устарела',
-    not_found: 'Карточка не найдена',
-  },
-  refreshed: 'Рейтинг обновлён',
-} as const;
+/** Тексты карточек по умолчанию (русский); на языке создателя — TEXTS[lang].card. */
+export const CHAT_TEXT = TEXTS.ru.card;
 
 export class ChatBot {
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -97,58 +69,66 @@ export class ChatBot {
     return `https://t.me/${this.deps.botUsername}?${this.deps.directLinks ? 'startapp' : 'start'}=${payload}`;
   }
 
-  cardText(room: RoomRow, view: RoomView): string {
-    const creator = esc(room.creatorName || 'Игрок');
+  /** Текст карточки на языке tx (карточку видит весь чат — язык её создателя). */
+  cardText(room: RoomRow, view: RoomView, tx: Texts = TEXTS.ru): string {
+    const c = tx.card;
+    const num = (n: number) => n.toLocaleString(tx.locale).replace(/[\u00a0\u202f]/g, ' ');
+    const creator = esc(room.creatorName || c.player);
     const hoursLeft = Math.max(0, Math.ceil((room.expiresAt - this.now()) / 3600_000));
     if (room.mode === 'team' && view.team) {
       const { progress, target } = view.team;
       const filled = Math.min(10, Math.floor((progress / Math.max(1, target)) * 10));
       const bar = '🟧'.repeat(filled) + '⬜'.repeat(10 - filled);
       const lines = view.top.length > 0
-        ? view.top.map((r, i) => `${MEDALS[i]} ${esc(r.name || 'Игрок')} — ${fmt(r.score)}`).join('\n')
-        : 'Пока никто не зажёг ни огонька — начни первым!';
-      const footer = progress >= target ? 'Фонарь зажжён! Сундук получили все участники 🎉'
-        : view.expired ? 'Время вышло — фонарь не успели зажечь' : `Участников: ${view.players} · до конца ${hoursLeft} ч`;
-      return `🏮 <b>${CHAT_TEXT.teamTitle}</b>\n${creator} зовёт весь чат: зажжём фонарь вместе? Каждая партия добавляет огоньки.\n\n${bar}\n${fmt(Math.min(progress, target))} / ${fmt(target)} огоньков\n\n${lines}\n\n${footer}`;
+        ? view.top.map((r, i) => `${MEDALS[i]} ${esc(r.name || c.player)} — ${num(r.score)}`).join('\n')
+        : c.teamNobody;
+      const footer = progress >= target ? c.teamDone : view.expired ? c.teamFailed : c.members(view.players, hoursLeft);
+      return `🏮 <b>${c.teamTitle}</b>\n${c.teamBody(creator)}\n\n${bar}\n${c.teamProgress(Math.min(progress, target), target)}\n\n${lines}\n\n${footer}`;
     }
     if (room.mode === 'duel' && view.duel) {
       const ps = view.duel.players;
-      const line = (p: (typeof ps)[number]) => `${esc(p.name || 'Игрок')} — ${p.won ? `${p.moves} ходов` : `не прошёл (${fmt(p.score)})`}`;
-      const body = ps.length === 0 ? 'Ждём соперника — первый, кто нажмёт «Играть», примет вызов!'
-        : ps.map((p) => `⚔️ ${line(p)}`).join('\n') + (ps.length === 1 && !view.expired ? '\nЖдём второго игрока…' : '');
-      const footer = view.duel.winner ? `Победил ${esc(view.duel.winner)}! 🏆` : view.expired ? 'Дуэль закончилась' : `До конца ${Math.max(1, Math.ceil((room.expiresAt - this.now()) / 60_000))} мин`;
-      return `⚔️ <b>${CHAT_TEXT.duelTitle}</b> · уровень ${room.levelId}\n${creator} вызывает: одна попытка, побеждает тот, кто пройдёт за меньшее число ходов.\n\n${body}\n\n${footer}`;
+      const line = (p: (typeof ps)[number]) => `${esc(p.name || c.player)} — ${p.won ? c.duelMoves(p.moves ?? 0) : c.duelLost(p.score)}`;
+      const body = ps.length === 0 ? c.duelWaiting
+        : ps.map((p) => `⚔️ ${line(p)}`).join('\n') + (ps.length === 1 && !view.expired ? `\n${c.duelSecond}` : '');
+      const footer = view.duel.winner ? c.duelWinner(esc(view.duel.winner)) : view.expired ? c.duelEnded
+        : c.minutesLeft(Math.max(1, Math.ceil((room.expiresAt - this.now()) / 60_000)));
+      return `⚔️ <b>${c.duelTitle}</b> · ${c.level(room.levelId)}\n${c.duelBody(creator)}\n\n${body}\n\n${footer}`;
     }
-    if (room.mode === 'help') {
-      const name = esc(room.creatorName || 'Игрок');
-      return `🏮 <b>${name} просит жизнь!</b>\nФонарики-сердечки закончились. Нажми кнопку — и жизнь улетит к ${name}.\n\nПодарили: ${view.gifts}/${view.maxGifts}`;
-    }
+    if (room.mode === 'help') return `${c.helpBody(creator)}\n\n${c.gifts(view.gifts, view.maxGifts)}`;
     const lines = view.top.length > 0
-      ? view.top.map((r, i) => `${MEDALS[i]} ${esc(r.name || 'Игрок')} — ${fmt(r.score)}${r.boosted ? ' ⚡' : ''}`).join('\n')
-      : 'Пока никто не сыграл — будь первым!';
-    const footer = view.expired ? 'Челлендж завершён 🏁' : `Сыграли: ${view.players} · до конца ${hoursLeft} ч`;
-    const legend = view.top.some((r) => r.boosted) ? '\n⚡ — с бустерами' : '';
-    return `🌸 <b>${CHAT_TEXT.challengeTitle}</b> · уровень ${room.levelId}\n${esc(room.creatorName || 'Игрок')} зовёт: кто наберёт больше очков? Первая попытка бесплатно.\n\n${lines}${legend}\n\n${footer}`;
+      ? view.top.map((r, i) => `${MEDALS[i]} ${esc(r.name || c.player)} — ${num(r.score)}${r.boosted ? ' ⚡' : ''}`).join('\n')
+      : c.nobody;
+    const footer = view.expired ? c.challengeEnded : c.played(view.players, hoursLeft);
+    const legend = view.top.some((r) => r.boosted) ? `\n${c.boosted}` : '';
+    return `🌸 <b>${c.challengeTitle}</b> · ${c.level(room.levelId)}\n${c.challengeBody(creator)}\n\n${lines}${legend}\n\n${footer}`;
   }
 
-  cardMarkup(room: RoomRow): { inline_keyboard: unknown[][] } {
+  cardMarkup(room: RoomRow, tx: Texts = TEXTS.ru): { inline_keyboard: unknown[][] } {
+    const c = tx.card;
     return room.mode === 'help'
-      ? { inline_keyboard: [[{ text: CHAT_TEXT.gift, callback_data: `gift:${room.id}` }], [{ text: CHAT_TEXT.playGame, url: this.link() }]] }
-      : { inline_keyboard: [[{ text: CHAT_TEXT.play, url: this.link(room.id) }], [{ text: CHAT_TEXT.top, callback_data: `top:${room.id}` }]] };
+      ? { inline_keyboard: [[{ text: c.gift, callback_data: `gift:${room.id}` }], [{ text: c.playGame, url: this.link() }]] }
+      : { inline_keyboard: [[{ text: c.play, url: this.link(room.id) }], [{ text: c.top, callback_data: `top:${room.id}` }]] };
+  }
+
+  /** Язык карточки — язык её создателя. */
+  private async roomTexts(room: RoomRow): Promise<Texts> {
+    return textsFor(await this.deps.service.languageOf(room.creatorId));
   }
 
   private async article(room: RoomRow): Promise<Record<string, unknown>> {
     const view = await this.deps.service.roomView(room.id, null);
+    const tx = await this.roomTexts(room);
+    const c = tx.card;
     return {
       type: 'article',
       id: room.id,
-      title: { help: CHAT_TEXT.helpTitle, challenge: CHAT_TEXT.challengeTitle, team: CHAT_TEXT.teamTitle, duel: CHAT_TEXT.duelTitle }[room.mode],
+      title: { help: c.helpTitle, challenge: c.challengeTitle, team: c.teamTitle, duel: c.duelTitle }[room.mode],
       description: {
-        help: CHAT_TEXT.helpDescription, challenge: CHAT_TEXT.challengeDescription(room.levelId),
-        team: CHAT_TEXT.teamDescription(room.target), duel: CHAT_TEXT.duelDescription(room.levelId),
+        help: c.helpDescription, challenge: c.challengeDescription(room.levelId),
+        team: c.teamDescription(room.target), duel: c.duelDescription(room.levelId),
       }[room.mode],
-      input_message_content: { message_text: this.cardText(room, view), parse_mode: 'HTML' },
-      reply_markup: this.cardMarkup(room),
+      input_message_content: { message_text: this.cardText(room, view, tx), parse_mode: 'HTML' },
+      reply_markup: this.cardMarkup(room, tx),
     };
   }
 
@@ -175,10 +155,11 @@ export class ChatBot {
     const room = await this.deps.service.getRoom(roomId);
     if (!room?.inlineMessageId) return false;
     const view = await this.deps.service.roomView(roomId, null);
+    const tx = await this.roomTexts(room);
     try {
       await this.deps.api.call('editMessageText', {
-        inline_message_id: room.inlineMessageId, text: this.cardText(room, view), parse_mode: 'HTML',
-        reply_markup: this.cardMarkup(room),
+        inline_message_id: room.inlineMessageId, text: this.cardText(room, view, tx), parse_mode: 'HTML',
+        reply_markup: this.cardMarkup(room, tx),
       });
     } catch (e) {
       // карточка не изменилась — это не ошибка
@@ -188,11 +169,11 @@ export class ChatBot {
   }
 
   /** Пуш в личку с кнопкой игры. Бот заблокирован — больше не пишем. */
-  async push(userId: number, text: string): Promise<boolean> {
+  async push(userId: number, text: string, tx: Texts = TEXTS.ru): Promise<boolean> {
     try {
       await this.deps.api.call('sendMessage', {
-        chat_id: userId, text: `${text}\n\nВыключить уведомления: /notify off`,
-        reply_markup: { inline_keyboard: [[{ text: BOT_TEXT.play, web_app: { url: this.deps.webAppUrl } }]] },
+        chat_id: userId, text: `${text}\n\n${tx.bot.pushFooter}`,
+        reply_markup: { inline_keyboard: [[{ text: tx.bot.play, web_app: { url: this.deps.webAppUrl } }]] },
       });
       return true;
     } catch (e) {
@@ -213,10 +194,12 @@ export class ChatBot {
   }
 
   /** Ссылка на оплату счёта в Telegram Stars (валюта XTR, provider_token не нужен). */
-  async invoiceLink(inv: { invoiceId: string; title: string; description: string; stars: number }): Promise<string> {
+  async invoiceLink(inv: { invoiceId: string; title: string; description: string; stars: number; product?: string }): Promise<string> {
     return this.deps.api.call<string>('createInvoiceLink', {
       title: inv.title, description: inv.description, payload: inv.invoiceId, currency: 'XTR',
       prices: [{ label: inv.title, amount: inv.stars }],
+      // пропуск — подписка Stars: Telegram сам списывает раз в 30 дней (subscription_period всегда 2592000)
+      ...(inv.product === 'pass' ? { subscription_period: 2_592_000 } : {}),
     });
   }
 
@@ -233,7 +216,7 @@ export class ChatBot {
     if (!msg.from) return;
     const status = await this.deps.service.completePayment(p.telegram_payment_charge_id, p.invoice_payload, msg.from.id, p.total_amount);
     if (status === 'unknown') this.log(`payment for unknown invoice ${p.invoice_payload} (${p.telegram_payment_charge_id})`);
-    if (status === 'ok') await this.deps.api.call('sendMessage', { chat_id: msg.chat.id, text: BOT_TEXT.paid('Покупка') });
+    if (status === 'ok') await this.deps.api.call('sendMessage', { chat_id: msg.chat.id, text: textsFor(msg.from.language_code).bot.paid });
   }
 
   /** /refund <charge id> — только администраторам: сначала возврат в Telegram, потом списание в игре. */
@@ -291,6 +274,7 @@ export class ChatBot {
 
   private async onMessage(msg: NonNullable<Update['message']>): Promise<void> {
     if (!msg.text || msg.chat.type !== 'private') return;
+    const tx = textsFor(msg.from?.language_code);
     if (/^\/report(?:@\w+)?$/.test(msg.text) && msg.from && this.deps.adminIds?.includes(msg.from.id) && this.deps.report) {
       const text = await this.deps.report();
       // сообщение Telegram — до 4096 символов: длинную сводку режем на части по строкам
@@ -310,15 +294,15 @@ export class ChatBot {
       await this.deps.service.login(toUser(msg.from));
       await this.deps.service.setNotify(msg.from.id, on);
       return void (await this.deps.api.call('sendMessage', {
-        chat_id: msg.chat.id, text: on ? 'Уведомления включены (не больше двух в день). Выключить: /notify off' : 'Уведомления выключены. Включить: /notify on',
+        chat_id: msg.chat.id, text: on ? tx.bot.notifyOn : tx.bot.notifyOff,
       }));
     }
     if (/^\/myid(?:@\w+)?$/.test(msg.text)) {
-      return void (await this.deps.api.call('sendMessage', { chat_id: msg.chat.id, text: `Твой Telegram id: ${msg.from?.id ?? '—'}` }));
+      return void (await this.deps.api.call('sendMessage', { chat_id: msg.chat.id, text: tx.bot.myId(msg.from?.id ?? '—') }));
     }
     const cmd = /^\/(paysupport|terms|refund)(?:@\w+)?(?:\s+(\S+))?/.exec(msg.text);
     if (cmd?.[1] === 'refund') return this.onRefund(msg.chat.id, msg.from?.id, cmd[2]);
-    if (cmd) return void (await this.deps.api.call('sendMessage', { chat_id: msg.chat.id, text: cmd[1] === 'terms' ? BOT_TEXT.terms : BOT_TEXT.paysupport }));
+    if (cmd) return void (await this.deps.api.call('sendMessage', { chat_id: msg.chat.id, text: cmd[1] === 'terms' ? tx.bot.terms : tx.bot.paysupport }));
     const m = /^\/start(?:@\w+)?(?:\s+(\S+))?/.exec(msg.text);
     if (!m) return;
     const payload = m[1];
@@ -329,17 +313,17 @@ export class ChatBot {
       const url = `${this.deps.webAppUrl}?room=${encodeURIComponent(room.id)}`;
       await this.deps.api.call('sendMessage', {
         chat_id: msg.chat.id,
-        text: room.mode === 'team' ? CHAT_TEXT.teamStart(room.creatorName || 'Друг')
-          : room.mode === 'duel' ? CHAT_TEXT.duelStart(room.creatorName || 'Друг', room.levelId)
-            : CHAT_TEXT.roomStart(room.creatorName || 'Друг', room.levelId),
-        reply_markup: { inline_keyboard: [[{ text: CHAT_TEXT.play, web_app: { url } }]] },
+        text: room.mode === 'team' ? tx.card.teamStart(room.creatorName || tx.bot.friend)
+          : room.mode === 'duel' ? tx.card.duelStart(room.creatorName || tx.bot.friend, room.levelId)
+            : tx.card.roomStart(room.creatorName || tx.bot.friend, room.levelId),
+        reply_markup: { inline_keyboard: [[{ text: tx.card.play, web_app: { url } }]] },
       });
       return;
     }
     await this.deps.api.call('sendMessage', {
       chat_id: msg.chat.id,
-      text: payload?.startsWith('r') ? CHAT_TEXT.roomGone : BOT_TEXT.start(msg.from?.first_name ?? 'путник'),
-      reply_markup: { inline_keyboard: [[{ text: BOT_TEXT.play, web_app: { url: this.deps.webAppUrl } }]] },
+      text: payload?.startsWith('r') ? tx.card.roomGone : tx.bot.start(msg.from?.first_name ?? tx.bot.friend),
+      reply_markup: { inline_keyboard: [[{ text: tx.bot.play, web_app: { url: this.deps.webAppUrl } }]] },
     });
   }
 
@@ -353,9 +337,9 @@ export class ChatBot {
     } catch (e) {
       if (!(e instanceof ServiceError && e.code === 'room_limit')) throw e;
       results = [{
-        type: 'article', id: 'limit', title: CHAT_TEXT.limitTitle, description: CHAT_TEXT.limitText,
-        input_message_content: { message_text: CHAT_TEXT.limitText },
-        reply_markup: { inline_keyboard: [[{ text: CHAT_TEXT.playGame, url: this.link() }]] },
+        type: 'article', id: 'limit', title: textsFor(q.from.language_code).card.limitTitle, description: textsFor(q.from.language_code).card.limitText,
+        input_message_content: { message_text: textsFor(q.from.language_code).card.limitText },
+        reply_markup: { inline_keyboard: [[{ text: textsFor(q.from.language_code).card.playGame, url: this.link() }]] },
       }];
     }
     await this.deps.api.call('answerInlineQuery', { inline_query_id: q.id, results, cache_time: 0, is_personal: true });
@@ -374,11 +358,11 @@ export class ChatBot {
     if (c.inline_message_id) await this.deps.service.setRoomMessage(roomId, c.inline_message_id);
     if (kind === 'gift') {
       const r = await this.deps.service.giftLife(roomId, toUser(c.from));
-      await this.deps.api.call('answerCallbackQuery', { callback_query_id: c.id, text: CHAT_TEXT.giftResult[r.status] });
+      await this.deps.api.call('answerCallbackQuery', { callback_query_id: c.id, text: textsFor(c.from.language_code).card.giftResult[r.status] });
       if (r.status === 'ok' || r.status === 'full') await this.refresh(roomId);
       return;
     }
     await this.refresh(roomId);
-    await this.deps.api.call('answerCallbackQuery', { callback_query_id: c.id, text: CHAT_TEXT.refreshed });
+    await this.deps.api.call('answerCallbackQuery', { callback_query_id: c.id, text: textsFor(c.from.language_code).card.refreshed });
   }
 }

@@ -18,6 +18,8 @@ export interface Reward {
   /** Бесконечные жизни на столько миллисекунд. */
   readonly infiniteLivesMs?: number;
   readonly card?: string;
+  /** Рамка аватара (косметика). */
+  readonly frame?: string;
 }
 
 export const TASK_KINDS = ['win', 'stars', 'threeStars', 'booster', 'score', 'room'] as const;
@@ -52,6 +54,16 @@ export interface MetaState {
    */
   /** Кристаллы за подаренные в чате жизни: день и сколько уже начислено (PRD: лимит 3 в день). */
   readonly helpDay?: number;
+  /** Фестивальный пропуск текущего сезона: очки и забранные ступени обеих дорожек; премиум оплачен до passUntil. */
+  readonly pass?: { readonly season: number; readonly points: number; readonly free: readonly number[]; readonly premium: readonly number[] };
+  readonly passUntil?: number;
+  /** Рамки аватара: полученные и выбранная. */
+  readonly frames?: readonly string[];
+  readonly frame?: string;
+  /** Фестиваль: какой (id и год) и сколько его уровней пройдено. */
+  readonly festival?: { readonly id: string; readonly endsAt: number; readonly done: number };
+  /** Серия побед на карте подряд (PRD «Серия побед»): сгорает при поражении. */
+  readonly streak?: number;
   readonly helpCount?: number;
   readonly gates?: Readonly<Record<string, { readonly reachedAt: number; readonly keys: readonly number[]; readonly open?: boolean }>>;
 }
@@ -194,8 +206,20 @@ export function grant(w: Wallet, r: Reward, now: number): WalletUpdate {
   };
 }
 
-export function addCard(meta: MetaState, r: Reward): MetaState {
-  if (!r.card) return meta;
-  const cards = meta.cards ?? {};
-  return { ...meta, cards: { ...cards, [r.card]: (cards[r.card] ?? 0) + 1 } };
+/** Косметика награды: карточка в коллекцию, рамка в рамки; собранный сет карточек тоже даёт рамку. */
+export function addCard(meta: MetaState, r: Reward, setFrames: (cards: Readonly<Record<string, number>>, frames: readonly string[]) => string[] = () => []): MetaState {
+  let next = meta;
+  if (r.card) {
+    const cards = next.cards ?? {};
+    next = { ...next, cards: { ...cards, [r.card]: (cards[r.card] ?? 0) + 1 } };
+  }
+  const frames = [...(next.frames ?? [])];
+  if (r.frame && !frames.includes(r.frame)) frames.push(r.frame);
+  for (const f of setFrames(next.cards ?? {}, frames)) frames.push(f);
+  return frames.length > (next.frames ?? []).length ? { ...next, frames } : next;
+}
+
+/** Бесплатные бустеры старта за серию побед: 1 — луч и бомба, 2 — и радужный, 3+ — и +3 хода. */
+export function streakBoosters(streak: number): Item[] {
+  return (['beamBomb', 'rainbow', 'extraMoves'] as const).slice(0, Math.min(3, Math.max(0, streak)));
 }

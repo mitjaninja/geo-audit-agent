@@ -1,32 +1,18 @@
 import type { Item, MetaView, Reward, TaskState } from './api.ts';
 import { ITEM_INFO } from './economy.ts';
+import { t } from './i18n.ts';
 
-/** Карточки персонажей (награда 7-го дня календаря). Список — как на сервере (apps/server/src/meta.ts). */
-export const CARD_TITLES: Readonly<Record<string, string>> = {
-  mika_yukata: 'Мика в юкате',
-  pon_lantern: 'Пон с фонариком',
-  ren_festival: 'Рэн на фестивале',
-  setsu_moon: 'Сэцу под луной',
-  mika_sakura: 'Мика под сакурой',
-  ren_market: 'Рэн на рынке',
-  setsu_snow: 'Сэцу в снегопад',
-};
-
-const plural = (n: number, one: string, few: string, many: string) => {
-  const m10 = n % 10;
-  const m100 = n % 100;
-  if (m10 === 1 && m100 !== 11) return one;
-  if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return few;
-  return many;
-};
+/** Названия карточек — из словаря языка игрока. */
+export const cardTitle = (id: string): string => t.cards[id] ?? id;
 
 /** «Молот Пона, 2 💎, ∞ жизни 30 мин, карточка «Мика в юкате»». */
 export function rewardText(r: Reward): string {
   const parts: string[] = [];
   for (const [item, n] of Object.entries(r.items ?? {}) as [Item, number][]) parts.push(n > 1 ? `${ITEM_INFO[item].name} ×${n}` : ITEM_INFO[item].name);
   if (r.crystals) parts.push(`${r.crystals} 💎`);
-  if (r.infiniteLivesMs) parts.push(`∞ жизни ${Math.round(r.infiniteLivesMs / 60_000)} мин`);
-  if (r.card) parts.push(`карточка «${CARD_TITLES[r.card] ?? r.card}»`);
+  if (r.infiniteLivesMs) parts.push(t.reward.lives(Math.round(r.infiniteLivesMs / 60_000)));
+  if (r.card) parts.push(t.reward.card(cardTitle(r.card)));
+  if (r.frame) parts.push(t.reward.frame(t.frames[r.frame] ?? r.frame));
   return parts.join(', ');
 }
 
@@ -39,15 +25,15 @@ export function rewardIcon(r: Reward): { texture: string } | { text: string } {
   return { text: '♥' };
 }
 
-export function taskText(t: TaskState): string {
-  const n = t.target;
-  switch (t.kind) {
-    case 'win': return `Пройди ${n} ${plural(n, 'уровень', 'уровня', 'уровней')}`;
-    case 'stars': return `Собери ${n} ${plural(n, 'звезду', 'звезды', 'звёзд')}`;
-    case 'threeStars': return 'Пройди уровень на 3 ★';
-    case 'booster': return n === 1 ? 'Используй бустер' : `Используй ${n} бустера`;
-    case 'score': return `Набери ${n.toLocaleString('ru-RU')} очков`;
-    case 'room': return 'Сыграй челлендж в чате';
+export function taskText(task: TaskState): string {
+  const n = task.target;
+  switch (task.kind) {
+    case 'win': return t.tasks.win(n);
+    case 'stars': return t.tasks.stars(n);
+    case 'threeStars': return t.tasks.threeStars;
+    case 'booster': return t.tasks.booster(n);
+    case 'score': return t.tasks.score(n);
+    case 'room': return t.tasks.room;
   }
 }
 

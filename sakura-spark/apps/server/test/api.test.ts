@@ -14,6 +14,7 @@ import { loadLevels } from '../src/levels.ts';
 import { LIFE_REGEN_MS } from '../src/lives.ts';
 import { GameService, TIME_GRACE_MS } from '../src/service.ts';
 import { SqliteStore } from '../src/store.ts';
+import { NO_STREAK } from './helpers.ts';
 
 const TOKEN = '777:test';
 // как у Render generateValue: base64 с символами, которые Telegram в secret_token не принимает
@@ -51,7 +52,7 @@ beforeEach(async () => {
   let seq = 0;
   let chat: ChatBot | null = null;
   let roomSeq = 0;
-  const service = new GameService({
+  const service = new GameService({ economy: NO_STREAK,
     store, levels: LEVELS, now: () => clock, newSeed: () => 1000 + seq, newId: () => `att-${++seq}`,
     newRoomId: () => `rRoom${++roomSeq}`, onRoomChanged: (id) => void chat?.refresh(id),
   });
@@ -274,11 +275,20 @@ test('bot profile and setup: limits respected, webhook and menu button point to 
   const api = new BotApi(TOKEN, fakeFetch);
   await setupProfile(api);
   await setupBot(api, 'https://sakura.example/', 's3cret+/=');
-  assert.deepEqual(botCalls.map((c) => c.method), ['setMyDescription', 'setMyShortDescription', 'setMyCommands', 'setWebhook', 'setChatMenuButton']);
-  assert.equal(botCalls[3]!.params.url, 'https://sakura.example/telegram/webhook');
-  assert.match(String(botCalls[3]!.params.secret_token), /^[A-Za-z0-9_-]{1,256}$/, 'Telegram-legal characters only');
-  assert.equal(botCalls[3]!.params.secret_token, webhookToken('s3cret+/='));
-  assert.deepEqual((botCalls[4]!.params.menu_button as any).web_app, { url: 'https://sakura.example/' });
+  // профиль на 4 языках: русский по умолчанию, en/es/pt — с language_code
+  const profile = botCalls.slice(0, 12);
+  assert.deepEqual(profile.map((c) => c.method), Array(4).fill(['setMyDescription', 'setMyShortDescription', 'setMyCommands']).flat());
+  assert.deepEqual(profile.filter((c) => c.method === 'setMyCommands').map((c) => c.params.language_code), [undefined, 'en', 'es', 'pt']);
+  for (const c of profile) {
+    if (c.method === 'setMyDescription') assert.ok(String(c.params.description).length <= 512);
+    if (c.method === 'setMyShortDescription') assert.ok(String(c.params.short_description).length <= 120);
+  }
+  const [hook, menu] = botCalls.slice(12);
+  assert.deepEqual([hook!.method, menu!.method], ['setWebhook', 'setChatMenuButton']);
+  assert.equal(hook!.params.url, 'https://sakura.example/telegram/webhook');
+  assert.match(String(hook!.params.secret_token), /^[A-Za-z0-9_-]{1,256}$/, 'Telegram-legal characters only');
+  assert.equal(hook!.params.secret_token, webhookToken('s3cret+/='));
+  assert.deepEqual((menu!.params.menu_button as any).web_app, { url: 'https://sakura.example/' });
 });
 
 test('analytics: install, level_start, level_win / level_fail with moves left and goal progress, lives_empty', async () => {

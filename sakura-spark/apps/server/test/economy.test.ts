@@ -19,7 +19,7 @@ const LEVELS = new Map<number, LevelDef>([
   [4, parseLevel({ ...base, id: 4, moves: 8, goals: [{ type: 'score', target: 300 }] })],
 ]);
 // стартовый пак открывается после уровня 1, копилку можно разбить с 3 кристаллов — чтобы проверить на коротких фикстурах
-const ECONOMY: Economy = { ...DEFAULT_ECONOMY, starter: { ...DEFAULT_ECONOMY.starter, afterLevel: 1 }, piggy: { ...DEFAULT_ECONOMY.piggy, minToBreak: 3 } };
+const ECONOMY: Economy = { ...DEFAULT_ECONOMY, events: { ...DEFAULT_ECONOMY.events, winStreak: 0 }, starter: { ...DEFAULT_ECONOMY.starter, afterLevel: 1 }, piggy: { ...DEFAULT_ECONOMY.piggy, minToBreak: 3 } };
 
 let clock = 1_760_000_000_000;
 let store: SqliteStore;

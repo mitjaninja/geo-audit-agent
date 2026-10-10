@@ -4,6 +4,12 @@ import type { LevelDef, Match3Game } from '@sakura/core';
 import { ApiError, createApi } from './api.ts';
 import type { RoomMode } from './api.ts';
 import { ChoiceScene } from './scenes/ChoiceScene.ts';
+import { RaceScene } from './scenes/RaceScene.ts';
+import type { RaceData } from './scenes/RaceScene.ts';
+import type { RaceView, SeasonView } from './api.ts';
+import { SeasonScene } from './scenes/SeasonScene.ts';
+import type { SeasonData, SeasonTab } from './scenes/SeasonScene.ts';
+import { cardTitle, rewardText } from './meta.ts';
 import type { ChoiceData } from './scenes/ChoiceScene.ts';
 import type { Api, Auth, ClientEvent, FriendsView, GateView, Item, LivesView, MetaView, ProductId, ShopView, WalletView } from './api.ts';
 import { FriendsScene } from './scenes/FriendsScene.ts';
@@ -15,7 +21,7 @@ import { DailyScene } from './scenes/DailyScene.ts';
 import type { DailyData, MetaClaimRequest } from './scenes/DailyScene.ts';
 import { WheelScene } from './scenes/WheelScene.ts';
 import type { WheelData } from './scenes/WheelScene.ts';
-import { t } from './i18n.ts';
+import { lang, languageFor, setLanguage, t } from './i18n.ts';
 import { BootScene } from './scenes/BootScene.ts';
 import { GameScene } from './scenes/GameScene.ts';
 import type { GameOverResult, GameSceneData } from './scenes/GameScene.ts';
@@ -45,6 +51,9 @@ const bundled = new Map<number, LevelDef>(Object.values(files).map((json) => {
 }));
 
 const params = new URLSearchParams(location.search);
+// язык: ?lang= (разработка, тесты) или язык Telegram игрока; вне Telegram — русский
+setLanguage(languageFor(params.get('lang') ?? telegram.languageCode));
+document.documentElement.lang = lang;
 const intros = seenIntros((() => {
   try {
     return window.localStorage;
@@ -88,12 +97,18 @@ const progress = {
 let shopView: ShopView | null = null;
 let metaView: MetaView | null = null;
 let friendsView: FriendsView | null = null;
+let raceView: RaceView | null = null;
+let seasonView: SeasonView | null = null;
+/** Выпавшая карточка или награда фестиваля — показать по возвращении на карту. */
+let pendingNotice: string | null = null;
+/** Серия побед на карте: растёт с победой, сгорает при поражении (считает сервер, клиент повторяет для экрана старта). */
+let streak = 0;
 /** Закрытые ворота района, у которых стоит игрок. */
 let gate: GateView | null = null;
 
-const SCENES = ['game', 'message', 'map', 'room', 'start', 'shop', 'daily', 'wheel', 'friends', 'gate', 'choice'] as const;
+const SCENES = ['game', 'message', 'map', 'room', 'start', 'shop', 'daily', 'wheel', 'friends', 'gate', 'choice', 'race', 'season'] as const;
 type SceneKey = (typeof SCENES)[number];
-function show(scene: SceneKey, data: GameSceneData | MessageData | MapData | RoomData | StartData | ShopData | DailyData | WheelData | FriendsData | GateData | ChoiceData): void {
+function show(scene: SceneKey, data: GameSceneData | MessageData | MapData | RoomData | StartData | ShopData | DailyData | WheelData | FriendsData | GateData | ChoiceData | RaceData | SeasonData): void {
   for (const key of SCENES) if (key !== scene && game.scene.isActive(key)) game.scene.stop(key);
   if (game.scene.isActive(scene)) game.scene.getScene(scene)!.scene.restart(data);
   else game.scene.start(scene, data);
@@ -107,6 +122,11 @@ const toClient = (serverMs: number) => serverMs - clockOffset;
 const livesToClient = (l: LivesView): LivesView => ({ ...l, nextLifeAt: l.nextLifeAt === null ? null : toClient(l.nextLifeAt) });
 
 function showMap(focus?: number): void {
+  if (pendingNotice) {
+    const text = pendingNotice;
+    pendingNotice = null;
+    return message(t.newReward, text, { button: { label: t.toMap, onClick: () => showMap(focus) } });
+  }
   history.replaceState(null, '', `?${new URLSearchParams([...params].filter(([k]) => k !== 'level'))}`);
   show('map', {
     theme, dpr, levelCount: progress.levelCount, maxLevel: progress.maxLevel, stars: progress.stars,
@@ -119,15 +139,61 @@ function showMap(focus?: number): void {
     ...(metaView ? { dailyBadge: metaBadges(metaView).daily, wheelBadge: metaBadges(metaView).wheel } : {}),
     ...(friendsView ? { friends: friendsView.friends, friendsBadge: friendsView.inbox.length > 0 } : {}),
     onFriends: api && friendsView ? () => openFriends(() => showMap(focus)) : null,
+    onRace: api && raceView ? () => openRace(() => showMap(focus)) : null,
+    raceBadge: raceView?.race?.ended === true,
+    onSeason: api && seasonView ? () => openSeason('pass', () => showMap(focus)) : null,
+    seasonBadge: seasonView ? seasonView.pass.tiers.some((x) => x.tier <= seasonView!.pass.tier && (!x.freeClaimed || (seasonView!.pass.premium && !x.premiumClaimed))) : false,
+    onFestival: api && seasonView?.festival ? () => openSeason('festival', () => showMap(focus)) : null,
+    festivalBadge: seasonView?.festival ? seasonView.festival.done < seasonView.festival.levels.length : false,
+    frameColor: seasonView?.collection.frame ? seasonView.collection.frames.find((f) => f.id === seasonView!.collection.frame)?.color ?? null : null,
   });
 }
 
-const FRIEND_ERRORS: Readonly<Record<string, string>> = {
-  lives_full: 'Жизни и так полные — прими подарок, когда потратишь',
-  limit: 'На сегодня подарки кончились',
-  already: 'Уже сделано',
-  not_friends: 'Это не твой друг',
-};
+function openSeason(tab: SeasonTab, back: () => void): void {
+  if (!api || !seasonView) return back();
+  const refresh = async () => (seasonView = await api!.season().catch(() => seasonView));
+  show('season', {
+    theme, dpr, view: seasonView, tab, clockOffset, onClose: back,
+    onClaim: async (tier, track) => {
+      try {
+        const r = await api!.claimPass(tier, track);
+        progress.wallet = r.wallet;
+        progress.lives = livesToClient(r.lives);
+        await refresh();
+        return { ...(seasonView ? { view: seasonView } : {}), notice: t.got(rewardText(r.reward)) };
+      } catch {
+        return { notice: t.failed };
+      }
+    },
+    onBuyPass: telegram.inTelegram ? async () => {
+      const r = await purchase('pass', async () => (await refresh())?.pass.premium === true);
+      return { ...(seasonView ? { view: seasonView } : {}), ...(r.error ? { notice: r.error } : seasonView?.pass.premium ? { notice: t.season.activated } : {}) };
+    } : null,
+    onFrame: async (frame) => {
+      await api!.setFrame(frame).catch(() => null);
+      await refresh();
+      return seasonView ? { view: seasonView } : {};
+    },
+    onPlayFestival: (levelId) => void play(levelId),
+  });
+}
+
+function openRace(back: () => void): void {
+  if (!api || !raceView) return back();
+  show('race', {
+    theme, dpr, view: raceView, clockOffset, onClose: back, onPlay: () => showMap(),
+    onJoin: async () => {
+      raceView = await api!.joinRace().catch(() => raceView);
+      return raceView;
+    },
+    onSeen: () => void (async () => {
+      await api!.raceSeen().catch(() => {});
+      raceView = await api!.race().catch(() => raceView);
+      back();
+    })(),
+  });
+}
+
 
 function openFriends(back: () => void): void {
   if (!api || !friendsView) return back();
@@ -143,18 +209,18 @@ function openFriends(back: () => void): void {
       try {
         if (a.kind === 'send') {
           await api!.sendLife(a.id);
-          notice = 'Жизнь отправлена ❤';
+          notice = t.friends.lifeSent;
         } else if (a.kind === 'ask') {
           const r = await api!.askLives();
-          notice = r.asked > 0 ? `Попросили у друзей: ${r.asked}` : 'Сегодня уже просили';
+          notice = t.friends.asked(r.asked);
         } else {
           const r = await api!.mail(a.id);
           progress.wallet = r.wallet;
           progress.lives = livesToClient(r.lives);
-          notice = 'Готово!';
+          notice = t.friends.done;
         }
       } catch (e) {
-        notice = e instanceof ApiError ? FRIEND_ERRORS[e.code] ?? 'Не получилось — попробуй ещё раз' : 'Нет связи с сервером';
+        notice = e instanceof ApiError ? t.friends.errors[e.code] ?? t.failed : t.noConnection;
       }
       friendsView = await api!.friends().catch(() => friendsView);
       return { ...(friendsView ? { view: friendsView } : {}), notice };
@@ -173,9 +239,9 @@ function showGate(g: GateView): void {
     onAsk: async () => {
       try {
         const r = await api!.askKeys();
-        return r.asked > 0 ? `Попросили ключ у друзей: ${r.asked}` : 'Сегодня уже просили';
+        return t.gate.asked(r.asked);
       } catch {
-        return 'Не получилось — попробуй ещё раз';
+        return t.failed;
       }
     },
     onBuy: async () => {
@@ -190,7 +256,7 @@ function showGate(g: GateView): void {
           await openShopOverlay();
           return { opened: false, notice: t.economy.notEnough };
         }
-        return { opened: false, notice: 'Не получилось — попробуй ещё раз' };
+        return { opened: false, notice: t.failed };
       }
     },
     onOpen: () => void (async () => {
@@ -217,7 +283,7 @@ function openWheel(back: () => void): void {
         applyClaim(r);
         return { prize: r.prize, reward: r.reward, meta: r.meta, crystals: r.wallet.crystals };
       } catch (e) {
-        return { error: e instanceof ApiError && e.code === 'no_crystals' ? t.economy.notEnough : 'Не получилось — попробуй ещё раз' };
+        return { error: e instanceof ApiError && e.code === 'no_crystals' ? t.economy.notEnough : t.failed };
       }
     },
   });
@@ -230,7 +296,7 @@ function applyClaim(r: { wallet: WalletView; lives: LivesView; meta: MetaView })
 }
 
 async function claimMeta(c: MetaClaimRequest) {
-  if (!api) return { error: 'Нет связи с сервером' };
+  if (!api) return { error: t.noConnection };
   try {
     const r = c.kind === 'login' ? await api.claimLogin()
       : c.kind === 'task' ? await api.claimTask(c.slot)
@@ -241,14 +307,16 @@ async function claimMeta(c: MetaClaimRequest) {
   } catch {
     // уже забрано на другом устройстве и т. п. — покажем актуальное
     metaView = await api.meta().catch(() => metaView);
-    return { ...(metaView ? { meta: metaView } : {}), error: 'Эта награда уже недоступна' };
+    return { ...(metaView ? { meta: metaView } : {}), error: t.daily.unavailable };
   }
 }
 
 /** Мета меняется от игр (задания, звёзды для сундуков): обновить к возврату на карту. */
 async function refreshMeta(): Promise<void> {
   if (!api) return;
-  [metaView, friendsView] = await Promise.all([api.meta().catch(() => metaView), api.friends().catch(() => friendsView)]);
+  [metaView, friendsView, raceView, seasonView] = await Promise.all([
+    api.meta().catch(() => metaView), api.friends().catch(() => friendsView), api.race().catch(() => raceView), api.season().catch(() => seasonView),
+  ]);
 }
 
 /** Экран старта уровня с бустерами (онлайн); офлайн — сразу в игру. */
@@ -268,6 +336,7 @@ function showStart(levelId: number, room?: { id: string }): void {
     onBack: () => (room ? void showRoom(room.id) : showMap(levelId)),
     onBuy: buyItem,
     loadFriends: api && !room ? () => api!.levelFriends(levelId).then((r) => r.top) : null,
+    streak: room ? 0 : streak,
   });
 }
 
@@ -283,7 +352,8 @@ async function buyItem(item: Item): Promise<WalletView | null> {
 }
 
 /** Покупка за Stars: счёт → окно оплаты Telegram → ждём, пока сервер зачислит (вебхук может прийти чуть позже). */
-async function purchase(product: ProductId): Promise<{ wallet?: WalletView; error?: string }> {
+/** done — проверка, что покупка дошла (по умолчанию — изменился кошелёк). */
+async function purchase(product: ProductId, done?: () => Promise<boolean>): Promise<{ wallet?: WalletView; error?: string }> {
   if (!api) return {};
   if (!telegram.inTelegram) return { error: t.economy.paymentsOnlyTelegram };
   let link: string;
@@ -297,6 +367,11 @@ async function purchase(product: ProductId): Promise<{ wallet?: WalletView; erro
   if (status === 'unsupported') return { error: t.economy.paymentsOnlyTelegram };
   if (status !== 'paid') return status === 'failed' ? { error: t.economy.paymentFailed } : {};
   for (let i = 0; i < 10; i++) {
+    if (done) {
+      if (await done()) return {};
+      await new Promise((r) => setTimeout(r, 1000));
+      continue;
+    }
     const me = await api.me().catch(() => null);
     if (me && JSON.stringify(me.wallet) !== before) {
       progress.wallet = me.wallet;
@@ -344,9 +419,9 @@ function chooseChatMode(back: () => void): void {
   show('choice', {
     theme, dpr, title: t.share.title, onBack: back,
     options: [
-      { label: '🌸 Челлендж чата', hint: 'Один уровень на 24 часа — кто наберёт больше очков', onClick: pick('challenge') },
-      { label: '🏮 Командный фонарь', hint: 'Весь чат вместе зажигает огоньки за 48 часов — сундук всем', onClick: pick('team') },
-      { label: '⚔️ Дуэль', hint: 'Один на один за час: кто пройдёт за меньшее число ходов', onClick: pick('duel') },
+      { ...t.chatModes.challenge, onClick: pick('challenge') },
+      { ...t.chatModes.team, onClick: pick('team') },
+      { ...t.chatModes.duel, onClick: pick('duel') },
     ],
   });
 }
@@ -456,11 +531,15 @@ function recordStars(levelId: number, stars: number): void {
   progress.stars[levelId] = { stars: Math.max(prev, stars) };
 }
 
+/** id уровней фестивалей — от 1000 (как на сервере, season.ts). */
+const isFestivalLevel = (id: number) => id > 1000;
+
 function startScene(
   level: LevelDef, seed: number, attemptId: string | null, lives: LivesView | null,
   opts: { roomId?: string; eagerHints?: number; assist?: number; startBoosters?: readonly Item[] } = {},
 ): void {
   const roomId = opts.roomId ?? null;
+  const festival = isFestivalLevel(level.id);
   const onGameOver = async (match: Match3Game, timedOut: boolean): Promise<GameOverResult> => {
     if (!api || !attemptId) {
       const won = match.status === 'won';
@@ -472,8 +551,11 @@ function startScene(
     progress.lives = livesToClient(r.lives);
     progress.wallet = r.wallet;
     // в комнате звёзды не идут в прогресс карты
-    if (r.result === 'won' && !roomId) recordStars(level.id, r.stars);
+    if (r.result === 'won' && !roomId && !festival) recordStars(level.id, r.stars);
     if (r.gate) gate = r.gate;
+    if (r.drop) pendingNotice = t.season.drop(cardTitle(r.drop.card));
+    if (r.festivalReward) pendingNotice = t.season.festivalReward(rewardText(r.festivalReward));
+    if (!roomId) streak = r.result === 'won' ? streak + 1 : 0;
     // задания и сундуки зависят от партий — к возврату на карту значки будут свежими
     void refreshMeta();
     return {
@@ -486,6 +568,7 @@ function startScene(
       // сервер закроет попытку как брошенную — жизнь сгорит
       const r = await api.finish(attemptId, match.history, false).catch(() => null);
       if (r) progress.lives = livesToClient(r.lives);
+      if (!roomId) streak = 0;
     }
     if (roomId) await showRoom(roomId);
     else showMap(level.id);
@@ -508,6 +591,12 @@ function startScene(
       }
     },
     onFinish: (action) => {
+      // уровни фестиваля — вне карты: «Дальше» и «На карту» ведут на экран фестиваля
+      if (festival && action !== 'retry') return void (async () => {
+        seasonView = await api?.season().catch(() => seasonView) ?? seasonView;
+        if (pendingNotice) return showMap();
+        openSeason('festival', () => showMap());
+      })();
       if (action === 'map') return showMap(roomId ? undefined : level.id);
       if (roomId) return void (action === 'retry' ? playRoom(roomId) : showRoom(roomId));
       if (action === 'retry') return void play(level.id);
@@ -549,8 +638,10 @@ async function boot(): Promise<void> {
       progress.wallet = me.wallet;
       levelOverrides = me.levelOverrides ?? {};
       gate = me.gate ?? null;
-      [shopView, metaView, friendsView] = await Promise.all([
-        api.shop().catch(() => null), api.meta().catch(() => null), api.friends().catch(() => null),
+      streak = me.streak ?? 0;
+      [shopView, metaView, friendsView, raceView, seasonView] = await Promise.all([
+        api.shop().catch(() => null), api.meta().catch(() => null), api.friends().catch(() => null), api.race().catch(() => null),
+        api.season().catch(() => null),
       ]);
       track({ name: 'session_start', props: { platform: telegram.inTelegram ? 'telegram' : 'web' } });
     } catch {
@@ -586,6 +677,8 @@ game.events.once('ready', () => {
   game.scene.add('friends', FriendsScene, false);
   game.scene.add('gate', GateScene, false);
   game.scene.add('choice', ChoiceScene, false);
+  game.scene.add('race', RaceScene, false);
+  game.scene.add('season', SeasonScene, false);
   // Boot рисует текстуры и сразу передаёт управление
   game.scene.add('boot', BootScene, true, { onReady: () => void boot() });
 });

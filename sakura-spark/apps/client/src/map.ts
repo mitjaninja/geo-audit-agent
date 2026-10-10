@@ -1,3 +1,5 @@
+import { t } from './i18n.ts';
+
 /** Карта-тропа: эпизод = район Хоширо = 15 уровней (PRD, «Мета-прогрессия»). */
 export const LEVELS_PER_EPISODE = 15;
 
@@ -10,20 +12,16 @@ export interface Episode {
   readonly tint: number;
 }
 
-const DISTRICTS = [
-  { name: 'Храмовый холм', tint: 0xffc2d9 },
-  { name: 'Торговая улица', tint: 0xffd9a8 },
-  { name: 'Порт фонарей', tint: 0xb9dcff },
-  { name: 'Зимний квартал', tint: 0xd6e6ff },
-  { name: 'Небесный мост', tint: 0xd9c8ff },
-] as const;
+/** Оттенки 14 районов; названия — в словаре (t.districts), по порядку. */
+const TINTS = [0xffc2d9, 0xffd9a8, 0xb9dcff, 0xd6e6ff, 0xd9c8ff, 0xc4f0e8, 0xd4f0c0, 0xf0dcc4, 0xc8d4ff, 0xe0f0c8, 0xe4ccff, 0xffd0c0, 0xffe0f0, 0xffc8d8] as const;
 
 export function episodes(levelCount: number): Episode[] {
   const n = Math.ceil(levelCount / LEVELS_PER_EPISODE);
   return Array.from({ length: n }, (_, i) => {
-    const d = DISTRICTS[i % DISTRICTS.length]!;
+    const n = TINTS.length;
+    const name = t.districts[i % n]!;
     const from = i * LEVELS_PER_EPISODE + 1;
-    return { id: i + 1, name: i < DISTRICTS.length ? d.name : `${d.name} ${Math.floor(i / DISTRICTS.length) + 1}`, from, to: Math.min(levelCount, from + LEVELS_PER_EPISODE - 1), tint: d.tint };
+    return { id: i + 1, name: i < n ? name : `${name} ${Math.floor(i / n) + 1}`, from, to: Math.min(levelCount, from + LEVELS_PER_EPISODE - 1), tint: TINTS[i % n]! };
   });
 }
 

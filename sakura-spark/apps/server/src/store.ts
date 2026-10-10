@@ -143,6 +143,25 @@ export interface AttemptRow {
   readonly timeLimit: number | null;
 }
 
+export interface RaceRow {
+  readonly id: number;
+  readonly createdAt: number;
+  readonly endsAt: number;
+  readonly target: number;
+}
+
+export interface RaceMember {
+  readonly userId: number;
+  readonly firstName: string;
+  readonly joinedAt: number;
+  readonly progress: number;
+  readonly finishedAt: number | null;
+  /** Место среди финишировавших (1 — первый); null — ещё в пути. */
+  readonly place: number | null;
+  /** Игрок видел итог гонки — её можно не показывать. */
+  readonly seen: boolean;
+}
+
 export interface ConfigRow {
   readonly id: number;
   readonly json: string;
@@ -278,6 +297,13 @@ export interface Store {
   reservePush(userId: number, day: number, limit: number): Promise<boolean>;
   livesRefilled(now: number, regenMs: number, max: number): Promise<{ id: number; fullAt: number }[]>;
   setLivesPushAt(userId: number, at: number): Promise<void>;
+  /** Последняя гонка игрока (или null). */
+  currentRace(userId: number): Promise<{ race: RaceRow; members: RaceMember[] } | null>;
+  /** Вступить в открытую гонку (собрана меньше часа назад, есть места) или создать новую. */
+  joinRace(u: { userId: number; firstName: string }, now: number, size: number, target: number, durationMs: number, gatherMs: number): Promise<RaceRow>;
+  /** +1 к прогрессу; дошёл до цели — место по порядку финиша. Возвращает новое состояние участника. */
+  advanceRace(raceId: number, userId: number, now: number): Promise<RaceMember | null>;
+  markRaceSeen(raceId: number, userId: number): Promise<void>;
   /** Remote config: последняя запись — действующая, остальные — история для отката. */
   getConfig(): Promise<ConfigRow | null>;
   saveConfig(json: string, now: number, authorId: number | null): Promise<ConfigRow>;
@@ -423,6 +449,16 @@ const MIGRATIONS: readonly string[] = [
   ALTER TABLE room_results ADD COLUMN moves INTEGER;
   ALTER TABLE room_results ADD COLUMN contributed INTEGER NOT NULL DEFAULT 0;
   CREATE INDEX rooms_settle ON rooms (settled, expires_at);`,
+  // v8: события — гонка фонарей (группы до 5 игроков, кто первым пройдёт 10 новых уровней)
+  `CREATE TABLE races (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, created_at INTEGER NOT NULL, ends_at INTEGER NOT NULL, target INTEGER NOT NULL
+  );
+  CREATE TABLE race_members (
+    race_id INTEGER NOT NULL, user_id INTEGER NOT NULL, first_name TEXT NOT NULL, joined_at INTEGER NOT NULL,
+    progress INTEGER NOT NULL DEFAULT 0, finished_at INTEGER, place INTEGER, seen INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (race_id, user_id)
+  );
+  CREATE INDEX race_members_user ON race_members (user_id, race_id);`,
 ];
 
 /** Версия схемы после всех миграций. */
@@ -938,6 +974,60 @@ export class SqliteStore implements Store {
 
   async setLivesPushAt(userId: number, at: number): Promise<void> {
     this.db.prepare('UPDATE users SET lives_push_at = ? WHERE id = ?').run(at, userId);
+  }
+
+  // ---------- гонка фонарей ----------
+
+  private raceMembers(raceId: number): RaceMember[] {
+    return (this.db.prepare(`SELECT * FROM race_members WHERE race_id = ?
+      ORDER BY place IS NULL, place, progress DESC, joined_at`).all(raceId) as Row[]).map((r) => ({
+      userId: Number(r.user_id), firstName: String(r.first_name), joinedAt: Number(r.joined_at), progress: Number(r.progress),
+      finishedAt: r.finished_at === null ? null : Number(r.finished_at), place: r.place === null ? null : Number(r.place), seen: Number(r.seen) === 1,
+    }));
+  }
+
+  async currentRace(userId: number): Promise<{ race: RaceRow; members: RaceMember[] } | null> {
+    const r = this.db.prepare(`SELECT r.* FROM races r JOIN race_members m ON m.race_id = r.id WHERE m.user_id = ?
+      ORDER BY r.id DESC LIMIT 1`).get(userId) as Row | undefined;
+    if (!r) return null;
+    return {
+      race: { id: Number(r.id), createdAt: Number(r.created_at), endsAt: Number(r.ends_at), target: Number(r.target) },
+      members: this.raceMembers(Number(r.id)),
+    };
+  }
+
+  async joinRace(u: { userId: number; firstName: string }, now: number, size: number, target: number, durationMs: number, gatherMs: number): Promise<RaceRow> {
+    return this.tx(() => {
+      let r = this.db.prepare(`SELECT * FROM races r WHERE created_at > ? AND ends_at > ? AND target = ?
+        AND (SELECT COUNT(*) FROM race_members m WHERE m.race_id = r.id) < ? ORDER BY id LIMIT 1`).get(now - gatherMs, now, target, size) as Row | undefined;
+      if (!r) {
+        const id = Number(this.db.prepare('INSERT INTO races (created_at, ends_at, target) VALUES (?, ?, ?)').run(now, now + durationMs, target).lastInsertRowid);
+        r = { id, created_at: now, ends_at: now + durationMs, target };
+      }
+      this.db.prepare('INSERT OR IGNORE INTO race_members (race_id, user_id, first_name, joined_at) VALUES (?, ?, ?, ?)')
+        .run(Number(r.id), u.userId, u.firstName, now);
+      return { id: Number(r.id), createdAt: Number(r.created_at), endsAt: Number(r.ends_at), target: Number(r.target) };
+    });
+  }
+
+  async advanceRace(raceId: number, userId: number, now: number): Promise<RaceMember | null> {
+    return this.tx(() => {
+      const race = this.db.prepare('SELECT target, ends_at FROM races WHERE id = ?').get(raceId) as Row | undefined;
+      const m = this.db.prepare('SELECT progress, finished_at FROM race_members WHERE race_id = ? AND user_id = ?').get(raceId, userId) as Row | undefined;
+      if (!race || !m || m.finished_at !== null || now >= Number(race.ends_at)) return null;
+      const progress = Number(m.progress) + 1;
+      if (progress >= Number(race.target)) {
+        const place = Number((this.db.prepare('SELECT COUNT(*) AS n FROM race_members WHERE race_id = ? AND place IS NOT NULL').get(raceId) as Row).n) + 1;
+        this.db.prepare('UPDATE race_members SET progress = ?, finished_at = ?, place = ? WHERE race_id = ? AND user_id = ?').run(progress, now, place, raceId, userId);
+      } else {
+        this.db.prepare('UPDATE race_members SET progress = ? WHERE race_id = ? AND user_id = ?').run(progress, raceId, userId);
+      }
+      return this.raceMembers(raceId).find((x) => x.userId === userId) ?? null;
+    });
+  }
+
+  async markRaceSeen(raceId: number, userId: number): Promise<void> {
+    this.db.prepare('UPDATE race_members SET seen = 1 WHERE race_id = ? AND user_id = ?').run(raceId, userId);
   }
 
   async getConfig(): Promise<ConfigRow | null> {

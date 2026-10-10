@@ -7,6 +7,7 @@ import { createApp } from '../src/http.ts';
 import { CALENDAR, calendarReward, CARDS, dailyTasks, dayNumber, TASK_KINDS, WHEEL, wheelPrize } from '../src/meta.ts';
 import { GameService } from '../src/service.ts';
 import { SqliteStore } from '../src/store.ts';
+import { NO_STREAK } from './helpers.ts';
 
 // ---------- чистые функции ----------
 
@@ -65,7 +66,7 @@ beforeEach(async () => {
   clock = Date.UTC(2026, 9, 10, 9, 0, 0);
   store = new SqliteStore(':memory:');
   let seq = 0;
-  const service = new GameService({ store, levels: LEVELS, now: () => clock, newSeed: () => 1000 + seq, newId: () => `att-${++seq}`, random: () => rand });
+  const service = new GameService({ economy: NO_STREAK, store, levels: LEVELS, now: () => clock, newSeed: () => 1000 + seq, newId: () => `att-${++seq}`, random: () => rand });
   server = createApp({ service, botToken: '1:t', devAuth: true, now: () => clock });
   await new Promise<void>((r) => server.listen(0, r));
   url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -198,7 +199,7 @@ test('stuck on the last level for 3 days: a free booster, once per level', async
 });
 
 test('meta settings come from remote config', async () => {
-  const service = new GameService({ store, levels: LEVELS, now: () => clock, random: () => 0 });
+  const service = new GameService({ economy: NO_STREAK, store, levels: LEVELS, now: () => clock, random: () => 0 });
   await service.login({ id: 2, firstName: 'B' } as any);
   await service.setConfig(JSON.stringify({ economy: { meta: { wheelSpinPrice: 3, wheelExtraSpins: 1 } } }), null);
   await store.transact(2, () => ({ crystals: 10 }));

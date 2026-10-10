@@ -7,7 +7,8 @@ test('episodes of 15 levels named after Hoshiro districts', () => {
   assert.deepEqual(e.map((x) => [x.id, x.name, x.from, x.to]), [[1, 'Храмовый холм', 1, 15], [2, 'Торговая улица', 16, 30]]);
   assert.equal(episodes(31).length, 3);
   assert.equal(episodes(31)[2]!.to, 31, 'the last episode may be partial');
-  assert.equal(episodes(80)[5]!.name, 'Храмовый холм 2');
+  assert.equal(episodes(80)[5]!.name, 'Сад фонтанов');
+  assert.equal(episodes(220)[14]!.name, 'Храмовый холм 2', 'names repeat after the 14 districts');
   assert.equal(episodeOf(15), 1);
   assert.equal(episodeOf(16), 2);
 });

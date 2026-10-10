@@ -4,6 +4,7 @@ import { rewardIcon, rewardText, wheelOdds } from '../meta.ts';
 import { telegram } from '../telegram.ts';
 import { hexToInt } from '../theme.ts';
 import type { Theme } from '../theme.ts';
+import { t } from '../i18n.ts';
 import { Ui } from '../ui.ts';
 
 export interface WheelData {
@@ -51,9 +52,9 @@ export class WheelScene extends Phaser.Scene {
     const panel = this.add.graphics().setDepth(-1);
     const top = telegram.insets().top * k + 12 * k;
     let y = top + 36 * k;
-    this.ui.text(W / 2, y, 'Колесо удачи', 24, { bold: true });
+    this.ui.text(W / 2, y, t.wheel.title, 24, { bold: true });
     y += 28 * k;
-    this.ui.text(W / 2, y, data.notice ?? `Кристаллы: ${data.crystals} 💎`, 14, {
+    this.ui.text(W / 2, y, data.notice ?? t.wheel.balance(data.crystals), 14, {
       bold: data.notice !== undefined, color: data.notice ? theme.button : theme.hint, wrap: pw - 48 * k, align: 'center',
     });
     y += 36 * k;
@@ -93,16 +94,16 @@ export class WheelScene extends Phaser.Scene {
     y = cy + R + 34 * k;
 
     const w = meta.wheel;
-    const label = w.free ? 'Крутить бесплатно' : w.extraLeft > 0 ? `Ещё спин · ${w.price} 💎` : 'На сегодня спины кончились';
+    const label = w.free ? t.wheel.free : w.extraLeft > 0 ? t.wheel.paid(w.price) : t.wheel.none;
     this.ui.button(label, W / 2, y, pw - 48 * k, w.free || w.extraLeft > 0 ? 'primary' : 'disabled', () => void this.spin());
     y += 40 * k;
     if (!w.free && w.extraLeft > 0) {
-      this.ui.text(W / 2, y, `Бесплатный спин — завтра. Платных осталось: ${w.extraLeft}`, 12, { color: theme.hint });
+      this.ui.text(W / 2, y, t.wheel.left(w.extraLeft), 12, { color: theme.hint });
       y += 22 * k;
     }
 
     // шансы — открыто, в две колонки
-    this.ui.text(x + 24 * k, y, 'Шансы', 15, { bold: true, originX: 0 });
+    this.ui.text(x + 24 * k, y, t.wheel.odds, 15, { bold: true, originX: 0 });
     y += 20 * k;
     const lines = wheelOdds(meta).split('\n');
     const half = Math.ceil(lines.length / 2);
@@ -114,7 +115,7 @@ export class WheelScene extends Phaser.Scene {
       });
     });
     y += half * 18 * k + 24 * k;
-    this.ui.button('Закрыть', W / 2, y, pw - 48 * k, 'secondary', () => data.onClose());
+    this.ui.button(t.close, W / 2, y, pw - 48 * k, 'secondary', () => data.onClose());
     y += 40 * k;
     panel.fillStyle(hexToInt(theme.panel), 1).fillRoundedRect(x, top, pw, y - top, 24 * k);
     (globalThis as Record<string, unknown>).__sakuraWheel = this;
@@ -126,7 +127,7 @@ export class WheelScene extends Phaser.Scene {
     const r = await this.data_.onSpin();
     if (!this.scene.isActive()) return;
     if (!r.meta || r.prize === undefined) {
-      this.scene.restart({ ...this.data_, notice: r.error ?? 'Не получилось — попробуй ещё раз' });
+      this.scene.restart({ ...this.data_, notice: r.error ?? t.failed });
       return;
     }
     const i = Math.max(0, this.data_.meta.wheel.prizes.findIndex((p) => p.id === r.prize));
@@ -139,7 +140,7 @@ export class WheelScene extends Phaser.Scene {
       onComplete: () => {
         telegram.haptic('success');
         this.time.delayedCall(400, () => this.scene.restart({
-          ...this.data_, meta: r.meta!, crystals: r.crystals ?? this.data_.crystals, notice: `Выпало: ${rewardText(r.reward ?? {})}`,
+          ...this.data_, meta: r.meta!, crystals: r.crystals ?? this.data_.crystals, notice: t.wheel.won(rewardText(r.reward ?? {})),
           angle: target % 360,
         }));
       },

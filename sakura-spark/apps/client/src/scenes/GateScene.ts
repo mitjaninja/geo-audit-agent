@@ -1,6 +1,6 @@
 import Phaser from 'phaser';
 import type { GateView } from '../api.ts';
-import { formatTime } from '../i18n.ts';
+import { formatTime, t } from '../i18n.ts';
 import { episodes } from '../map.ts';
 import { telegram } from '../telegram.ts';
 import { hexToInt } from '../theme.ts';
@@ -53,8 +53,8 @@ export class GateScene extends Phaser.Scene {
     const x = (W - pw) / 2;
     const y = Math.max(telegram.insets().top * k + 16 * k, (H - ph) / 2);
     this.ui.panel(x, y, pw, ph);
-    const name = episodes(data.levelCount)[gate.episode - 1]?.name ?? `Район ${gate.episode}`;
-    this.ui.text(W / 2, y + 40 * k, 'Новый район', 15, { color: theme.hint });
+    const name = episodes(data.levelCount)[gate.episode - 1]?.name ?? t.district(gate.episode);
+    this.ui.text(W / 2, y + 40 * k, t.gate.newDistrict, 15, { color: theme.hint });
     this.ui.text(W / 2, y + 70 * k, name, 24, { bold: true });
     if (data.notice) this.ui.text(W / 2, y + 102 * k, data.notice, 13, { bold: true, color: theme.button, wrap: pw - 48 * k, align: 'center' });
 
@@ -65,13 +65,13 @@ export class GateScene extends Phaser.Scene {
       this.add.circle(cx, y + 160 * k, 28 * k, got ? 0xffc94d : hexToInt(theme.hint), got ? 1 : 0.15);
       this.ui.text(cx, y + 160 * k, '🔑', 24).setAlpha(got ? 1 : 0.35);
     }
-    this.ui.text(W / 2, y + 206 * k, `Ключи от друзей: ${gate.keys} из ${gate.needed}`, 14, { color: theme.hint });
+    this.ui.text(W / 2, y + 206 * k, t.gate.keys(gate.keys, gate.needed), 14, { color: theme.hint });
     this.timer = this.ui.text(W / 2, y + 232 * k, '', 14, { bold: true });
 
-    this.ui.button('Попросить ключи', W / 2, y + 286 * k, pw - 48 * k, data.hasFriends ? 'primary' : 'disabled', () => void this.ask());
-    if (!data.hasFriends) this.ui.text(W / 2, y + 318 * k, 'Позови друзей — тогда сможешь попросить ключи', 12, { color: theme.hint });
-    this.ui.button(`Открыть сейчас · ${gate.price} 💎`, W / 2, y + 358 * k, pw - 48 * k, 'secondary', () => void this.buy());
-    this.ui.button('На карту', W / 2, y + 418 * k, pw - 48 * k, 'secondary', data.onBack);
+    this.ui.button(t.gate.ask, W / 2, y + 286 * k, pw - 48 * k, data.hasFriends ? 'primary' : 'disabled', () => void this.ask());
+    if (!data.hasFriends) this.ui.text(W / 2, y + 318 * k, t.gate.noFriends, 12, { color: theme.hint });
+    this.ui.button(t.gate.buy(gate.price), W / 2, y + 358 * k, pw - 48 * k, 'secondary', () => void this.buy());
+    this.ui.button(t.toMap, W / 2, y + 418 * k, pw - 48 * k, 'secondary', data.onBack);
     this.tick();
     this.time.addEvent({ delay: 1000, loop: true, callback: () => this.tick() });
     (globalThis as Record<string, unknown>).__sakuraGate = this;
@@ -80,14 +80,14 @@ export class GateScene extends Phaser.Scene {
   private tick(): void {
     const left = this.data_.gate.unlockAt - (Date.now() + this.data_.clockOffset);
     if (left <= 0) {
-      this.timer.setText('Район открыт!');
+      this.timer.setText(t.gate.open);
       if (!this.opened) {
         this.opened = true;
         this.time.delayedCall(600, () => this.data_.onOpen());
       }
       return;
     }
-    this.timer.setText(`Откроется сам через ${formatTime(Math.ceil(left / 1000))}`);
+    this.timer.setText(t.gate.opensIn(formatTime(Math.ceil(left / 1000))));
   }
 
   private async ask(): Promise<void> {

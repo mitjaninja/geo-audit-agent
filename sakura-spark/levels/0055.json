@@ -1,0 +1,25 @@
+{
+  "id": 55,
+  "width": 9,
+  "height": 9,
+  "colors": 5,
+  "moves": 12,
+  "difficulty": "hard",
+  "goals": [
+    { "type": "collect", "color": 1, "count": 30 },
+    { "type": "collect", "color": 2, "count": 30 },
+    { "type": "collect", "color": 4, "count": 30 }
+  ],
+  "stars": [6200, 10300, 14200],
+  "blockers": [
+    ".........",
+    ".........",
+    ".........",
+    ".........",
+    ".........",
+    "IIIIIIIII",
+    ".........",
+    ".........",
+    "........."
+  ]
+}

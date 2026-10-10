@@ -9,3 +9,5 @@ export type { WinRateBand } from './targets.ts';
 export type { PlayerModel } from './autotest.ts';
 export { calibrate, DEFAULT_PACES, DEFAULT_SKILLS } from './calibrate.ts';
 export type { Calibration, CalibrationRow, RealLevelStats } from './calibrate.ts';
+export { defaultWorkers, runJobs } from './pool.ts';
+export type { Job } from './pool.ts';

@@ -1,13 +1,15 @@
 import type { Item, ShopView } from './api.ts';
+import { t } from './i18n.ts';
 
 /** Бустеры в интерфейсе: название, подсказка, когда применяются. */
+// геттеры: название — на языке игрока, выбранном при запуске
 export const ITEM_INFO: Readonly<Record<Item, { readonly name: string; readonly hint: string; readonly when: 'start' | 'game' }>> = {
-  beamBomb: { name: 'Луч и бомба', hint: 'На старте на поле появятся луч фонаря и бумажная бомба', when: 'start' },
-  rainbow: { name: 'Радужный кристалл', hint: 'На старте на поле появится радужный кристалл', when: 'start' },
-  extraMoves: { name: '+3 хода', hint: 'Три дополнительных хода на уровень', when: 'start' },
-  hammer: { name: 'Молот Пона', hint: 'Убрать одну фишку или ударить по блокеру', when: 'game' },
-  freeSwap: { name: 'Свободный обмен', hint: 'Поменять соседние фишки без тройки', when: 'game' },
-  shuffle: { name: 'Перемешать', hint: 'Перемешать поле', when: 'game' },
+  get beamBomb() { return { ...t.items.beamBomb, when: 'start' as const }; },
+  get rainbow() { return { ...t.items.rainbow, when: 'start' as const }; },
+  get extraMoves() { return { ...t.items.extraMoves, when: 'start' as const }; },
+  get hammer() { return { ...t.items.hammer, when: 'game' as const }; },
+  get freeSwap() { return { ...t.items.freeSwap, when: 'game' as const }; },
+  get shuffle() { return { ...t.items.shuffle, when: 'game' as const }; },
 };
 
 export const START_ITEMS: readonly Item[] = ['beamBomb', 'rainbow', 'extraMoves'];

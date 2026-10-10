@@ -10,7 +10,7 @@ export const START_ITEMS: readonly Item[] = ['beamBomb', 'rainbow', 'extraMoves'
 export const GAME_ITEMS: readonly Item[] = ['hammer', 'freeSwap', 'shuffle'];
 
 /** Пакеты, которые покупаются за Telegram Stars. */
-export type ProductId = 'pack10' | 'pack50' | 'pack100' | 'pack250' | 'pack500' | 'starter' | 'piggy';
+export type ProductId = 'pack10' | 'pack50' | 'pack100' | 'pack250' | 'pack500' | 'starter' | 'piggy' | 'pass';
 
 export interface Economy {
   /** Цены бустеров в кристаллах. */
@@ -40,6 +40,13 @@ export interface Economy {
     readonly teamTarget: number; readonly teamHours: number; readonly duelMinutes: number;
     readonly challengePrizes: readonly number[]; readonly helpCrystalsPerDay: number;
   };
+  /** Фестивальный пропуск: подписка Stars на 30 дней. */
+  readonly pass: { readonly stars: number };
+  /** События: серия побед (1 — включена), гонка фонарей — цель, размер группы, срок, сбор группы, призы мест. */
+  readonly events: {
+    readonly winStreak: number; readonly raceTarget: number; readonly raceSize: number; readonly raceHours: number;
+    readonly raceGatherMinutes: number; readonly racePrizes: readonly number[];
+  };
 }
 
 export const DEFAULT_ECONOMY: Economy = {
@@ -63,6 +70,8 @@ export const DEFAULT_ECONOMY: Economy = {
   meta: { dayOffsetHours: 3, wheelSpinPrice: 9, wheelExtraSpins: 3, stuckDays: 3 },
   social: { giftsPerDay: 5, keysNeeded: 3, gateWaitHours: 24, gatePrice: 29, referralCrystals: 20, referralLevel: 10, pushesPerDay: 2 },
   chat: { teamTarget: 2500, teamHours: 48, duelMinutes: 60, challengePrizes: [5, 3, 2], helpCrystalsPerDay: 3 },
+  pass: { stars: 200 },
+  events: { winStreak: 1, raceTarget: 10, raceSize: 5, raceHours: 72, raceGatherMinutes: 60, racePrizes: [10, 5, 2] },
 };
 
 /** Цена n-й докупки ходов в попытке (0 — первая); дальше последней ступени — последняя цена. */

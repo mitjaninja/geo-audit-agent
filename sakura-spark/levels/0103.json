@@ -1,0 +1,25 @@
+{
+  "id": 103,
+  "width": 9,
+  "height": 9,
+  "colors": 5,
+  "moves": 31,
+  "difficulty": "normal",
+  "goals": [
+    { "type": "lanterns", "count": 2 },
+    { "type": "fog" }
+  ],
+  "stars": [7900, 13200, 18700],
+  "lanterns": { "total": 2, "maxOnBoard": 2, "spawnChance": 0.55 },
+  "blockers": [
+    ".........",
+    ".........",
+    "M..M.M...",
+    ".........",
+    "M........",
+    ".........",
+    ".........",
+    "..ffMffff",
+    "f.f.fffff"
+  ]
+}

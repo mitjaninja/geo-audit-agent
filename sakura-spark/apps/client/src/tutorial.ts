@@ -1,11 +1,12 @@
 import type { Match3Game, Speaker, Swap } from '@sakura/core';
+import { t } from './i18n.ts';
 
 /** Персонажи PRD: имя и цвет аватарки-заглушки (пока нет арта). */
 export const SPEAKERS: Readonly<Record<Speaker, { readonly name: string; readonly color: number }>> = {
-  mika: { name: 'Мика', color: 0xff8fc0 },
-  pon: { name: 'Пон', color: 0xb98a5e },
-  ren: { name: 'Рэн', color: 0xff9a57 },
-  setsu: { name: 'Сэцу', color: 0x8ec9ff },
+  get mika() { return { name: t.speakers.mika, color: 0xff8fc0 }; },
+  get pon() { return { name: t.speakers.pon, color: 0xb98a5e }; },
+  get ren() { return { name: t.speakers.ren, color: 0xff9a57 }; },
+  get setsu() { return { name: t.speakers.setsu, color: 0x8ec9ff }; },
 };
 
 /** Бездействие, после которого Пон подсказывает ход (мс). */

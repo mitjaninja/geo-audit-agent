@@ -470,6 +470,101 @@ try {
     await page.context().close();
   }
 
+  console.log('events: win streak gives free start boosters; lantern race from the map');
+  {
+    await service.login({ id: 50, firstName: 'Мика' });
+    await service.claimLogin(50);
+    await store.transact(50, (w) => ({ meta: { ...w.meta, streak: 2 } }));
+    const { page, errors } = await open('?devUser=50');
+    await mapReady(page);
+    await clickCanvas(page, (await g(page, 'm.nodeOnScreen(1)')) as { x: number; y: number });
+    await startReady(page);
+    await page.waitForTimeout(200);
+    await page.screenshot({ path: `${OUT}/28-streak.png` });
+    await startLevel(page);
+    await gameReady(page);
+    const specials = (await g(page, 's.match.board.grid.flat().filter((p) => p && (p.special === "rainbow")).length')) as number;
+    assert.ok(specials >= 1, 'streak 2 puts a rainbow on the board');
+    assert.equal((await store.getWallet(50)).items.rainbow, 3, 'free, not from the stock');
+    await page.goto(base + '?devUser=50');
+    await mapReady(page);
+    await clickCanvas(page, (await g(page, 'm.raceButton')) as { x: number; y: number });
+    const raceReady = () => page.waitForFunction(() => (globalThis as any).__sakuraRace?.scene.isActive() && (globalThis as any).__sakuraRace.buttons.length > 0);
+    await raceReady();
+    await clickCanvas(page, (await g(page, 'globalThis.__sakuraRace.buttons.find((b) => b.label === "Участвовать")')) as { x: number; y: number });
+    await page.waitForFunction(() => (globalThis as any).__sakuraRace?.scene.isActive() && (globalThis as any).__sakuraRace.buttons.some((b: any) => b.label === 'Играть'));
+    await page.waitForTimeout(200);
+    await page.screenshot({ path: `${OUT}/29-race.png` });
+    assert.deepEqual(errors, []);
+    await page.context().close();
+  }
+
+  console.log('season: pass tiers, collection and frames, festival levels off the map');
+  {
+    await service.login({ id: 60, firstName: 'Сэцу' });
+    await service.claimLogin(60);
+    await store.transact(60, (w) => ({
+      meta: { ...w.meta, pass: { season: Math.floor((Date.now() - Date.UTC(2025, 11, 31, 21)) / (30 * 86_400_000)), points: 7, free: [], premium: [] }, frames: ['sakura'] },
+    }));
+    await service.setConfig(JSON.stringify({ festival: 'halloween' }), null);
+    const { page, errors } = await open('?devUser=60');
+    await mapReady(page);
+    await page.waitForTimeout(200);
+    await page.screenshot({ path: `${OUT}/30-map-season.png` });
+    await clickCanvas(page, (await g(page, 'm.seasonButton')) as { x: number; y: number });
+    const seasonReady = () => page.waitForFunction(() => (globalThis as any).__sakuraSeason?.scene.isActive() && (globalThis as any).__sakuraSeason.buttons.length > 0);
+    const seasonButton = (label: string) => g(page, `globalThis.__sakuraSeason.buttons.find((b) => b.label === ${JSON.stringify(label)})`) as Promise<{ x: number; y: number }>;
+    await seasonReady();
+    await page.waitForTimeout(200);
+    await page.screenshot({ path: `${OUT}/31-pass.png` });
+    await clickCanvas(page, await seasonButton('Забрать'));
+    await page.waitForFunction(() => (globalThis as any).__sakuraSeason?.scene.isActive() && (globalThis as any).__sakuraSeason.children.list.some((o: any) => o.text?.startsWith('Получено')));
+    assert.deepEqual((await store.getWallet(60)).meta.pass?.free, [1]);
+    await seasonReady();
+    await clickCanvas(page, await seasonButton('🎴 Коллекция'));
+    await seasonReady();
+    await clickCanvas(page, await seasonButton('Надеть'));
+    await page.waitForFunction(() => (globalThis as any).__sakuraSeason?.buttons.some((b: any) => b.label === 'Снять'));
+    await page.screenshot({ path: `${OUT}/32-collection.png` });
+    assert.equal((await store.getWallet(60)).meta.frame, 'sakura');
+    await clickCanvas(page, await seasonButton('🎃 Фестиваль'));
+    await seasonReady();
+    await page.waitForTimeout(200);
+    await page.screenshot({ path: `${OUT}/33-festival.png` });
+    await clickCanvas(page, await seasonButton('Играть уровень 1'));
+    await gameShown(page);
+    assert.ok((await g(page, 's.data_.level.id')) as number > 1000);
+    assert.deepEqual(errors, []);
+    await page.context().close();
+    await service.setConfig(JSON.stringify({}), null);
+  }
+
+  console.log('level editor: paint ice, add a portal, see the lint warning, run the bot, export JSON');
+  {
+    const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2 });
+    const page = await ctx.newPage();
+    const errors: string[] = [];
+    page.on('pageerror', (e) => errors.push(String(e)));
+    await page.goto(base + 'editor.html');
+    await page.selectOption('header select', 'new');
+    await page.click('text=Блокеры');
+    await page.click('.brushes >> text=лёд ×2');
+    await page.click('.board .cell[data-r="3"][data-c="2"]');
+    assert.match(await page.inputValue('textarea'), /"\.\.I\.\.\.\.\."/);
+    await page.click('text=Порталы');
+    await page.click('.board .cell[data-r="1"][data-c="0"]');
+    await page.click('.board .cell[data-r="5"][data-c="7"]');
+    await page.waitForSelector('.warn >> text=out of nowhere');
+    await page.screenshot({ path: `${OUT}/27-editor.png`, fullPage: true });
+    await page.click('.board .cell[data-r="1"][data-c="0"]'); // убрать портал
+    await page.waitForSelector('.okc');
+    await page.fill('section:has(h2:text("Проверка")) input[type=number]', '30');
+    await page.click('text=Бот-тест');
+    await page.waitForSelector('text=Победы', { timeout: 60_000 });
+    assert.deepEqual(errors, []);
+    await ctx.close();
+  }
+
   console.log('offline, level 5: holes, blockers, portals, dark theme');
   {
     const { page, errors } = await open('?offline=1&level=5&seed=3', 'dark');

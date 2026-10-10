@@ -3,6 +3,7 @@ import type { FriendsView, MailItem } from '../api.ts';
 import { telegram } from '../telegram.ts';
 import { hexToInt } from '../theme.ts';
 import type { Theme } from '../theme.ts';
+import { t } from '../i18n.ts';
 import { Ui } from '../ui.ts';
 
 export type FriendAction =
@@ -23,11 +24,11 @@ export interface FriendsData {
   readonly notice?: string;
 }
 
-const MAIL_TEXT: Readonly<Record<MailItem['kind'], { text: (name: string) => string; button: string }>> = {
-  life: { text: (n) => `${n} дарит жизнь ❤`, button: 'Принять' },
-  ask_life: { text: (n) => `${n} просит жизнь`, button: 'Подарить' },
-  ask_key: { text: (n) => `${n} просит ключ к району 🔑`, button: 'Дать ключ' },
-};
+const mailText = (kind: MailItem['kind']): { text: (name: string) => string; button: string } => ({
+  life: { text: t.friends.mailLife, button: t.friends.accept },
+  ask_life: { text: t.friends.mailAskLife, button: t.friends.give },
+  ask_key: { text: t.friends.mailAskKey, button: t.friends.giveKey },
+})[kind];
 
 /**
  * Друзья (PRD «Соцфункции»): приглашение по ссылке, почта (подарки и просьбы), подарить или попросить жизнь.
@@ -63,57 +64,57 @@ export class FriendsScene extends Phaser.Scene {
     const top = telegram.insets().top * k + 12 * k;
     let y = top + 36 * k;
 
-    this.ui.text(W / 2, y, 'Друзья', 24, { bold: true });
+    this.ui.text(W / 2, y, t.friends.title, 24, { bold: true });
     y += 30 * k;
     if (data.notice) {
       this.ui.text(W / 2, y, data.notice, 14, { bold: true, color: theme.button, wrap: pw - 48 * k, align: 'center' });
       y += 30 * k;
     }
     y += 10 * k;
-    this.ui.button('Позвать друга', W / 2, y, pw - 48 * k, data.onInvite ? 'primary' : 'disabled', () => data.onInvite?.(), 42);
+    this.ui.button(t.friends.invite, W / 2, y, pw - 48 * k, data.onInvite ? 'primary' : 'disabled', () => data.onInvite?.(), 42);
     y += 34 * k;
     this.ui.text(W / 2, y, data.onInvite
-      ? `Друг дойдёт до уровня ${data.referral.level} — тебе ${data.referral.crystals} 💎`
-      : 'Приглашать можно, когда игра открыта в Telegram', 12, { color: theme.hint, wrap: pw - 48 * k, align: 'center' });
+      ? t.friends.referral(data.referral.level, data.referral.crystals)
+      : t.friends.inviteOnlyTelegram, 12, { color: theme.hint, wrap: pw - 48 * k, align: 'center' });
     y += 34 * k;
     const canAsk = view.friends.length > 0 && !view.askedToday;
-    this.ui.button(view.askedToday ? 'Жизнь сегодня уже просили' : 'Попросить жизнь у всех', W / 2, y, pw - 48 * k,
+    this.ui.button(view.askedToday ? t.friends.askedToday : t.friends.askAll, W / 2, y, pw - 48 * k,
       canAsk ? 'secondary' : 'disabled', () => void this.act({ kind: 'ask' }), 42);
     y += 40 * k;
 
     if (view.inbox.length > 0) {
       y += 6 * k;
-      this.ui.text(left, y, `Почта · ${view.inbox.length}`, 17, { bold: true, originX: 0 });
+      this.ui.text(left, y, t.friends.mail(view.inbox.length), 17, { bold: true, originX: 0 });
       y += 32 * k;
       for (const m of view.inbox.slice(0, 5)) {
-        const t = MAIL_TEXT[m.kind];
-        this.ui.text(left, y, t.text(m.from.name || 'Друг'), 15, { originX: 0, wrap: pw - 170 * k });
-        this.ui.button(t.button, right - 52 * k, y, 104 * k, 'primary', () => void this.act({ kind: 'mail', id: m.id }), 36);
+        const mt = mailText(m.kind);
+        this.ui.text(left, y, mt.text(m.from.name || t.friends.friend), 15, { originX: 0, wrap: pw - 170 * k });
+        this.ui.button(mt.button, right - 52 * k, y, 104 * k, 'primary', () => void this.act({ kind: 'mail', id: m.id }), 36);
         y += 46 * k;
       }
     }
 
     y += 6 * k;
-    this.ui.text(left, y, view.friends.length > 0 ? `Друзья · подарков сегодня: ${view.giftsLeft}` : 'Друзей пока нет', 17, { bold: true, originX: 0 });
+    this.ui.text(left, y, view.friends.length > 0 ? t.friends.list(view.giftsLeft) : t.friends.none, 17, { bold: true, originX: 0 });
     y += 30 * k;
     if (view.friends.length === 0) {
-      this.ui.text(left, y, 'Друзья появятся, когда кто-то сыграет твой челлендж в чате, подарит тебе жизнь или придёт по приглашению.',
+      this.ui.text(left, y, t.friends.noneText,
         13, { color: theme.hint, originX: 0, wrap: pw - 48 * k }).setOrigin(0, 0);
       y += 70 * k;
     }
     for (const f of view.friends.slice(0, 8)) {
       this.add.circle(left + 16 * k, y, 16 * k, avatarColor(f.id));
       this.ui.text(left + 16 * k, y, (f.name || '?').slice(0, 1).toUpperCase(), 14, { bold: true, color: '#ffffff' });
-      this.ui.text(left + 42 * k, y - 9 * k, f.name || 'Друг', 15, { originX: 0 });
-      this.ui.text(left + 42 * k, y + 11 * k, `уровень ${f.maxLevel}`, 12, { color: theme.hint, originX: 0 });
+      this.ui.text(left + 42 * k, y - 9 * k, f.name || t.friends.friend, 15, { originX: 0 });
+      this.ui.text(left + 42 * k, y + 11 * k, t.friends.level(f.maxLevel), 12, { color: theme.hint, originX: 0 });
       const can = !f.sentToday && view.giftsLeft > 0;
-      this.ui.button(f.sentToday ? '✓ ❤' : '❤ Подарить', right - 52 * k, y, 104 * k, can ? 'secondary' : 'disabled',
+      this.ui.button(f.sentToday ? t.friends.sent : t.friends.gift, right - 52 * k, y, 104 * k, can ? 'secondary' : 'disabled',
         () => void this.act({ kind: 'send', id: f.id }), 36);
       y += 48 * k;
     }
 
     y += 14 * k;
-    this.ui.button('Закрыть', W / 2, y, pw - 48 * k, 'secondary', () => data.onClose());
+    this.ui.button(t.close, W / 2, y, pw - 48 * k, 'secondary', () => data.onClose());
     y += 40 * k;
     panel.fillStyle(hexToInt(theme.panel), 1).fillRoundedRect(x, top, pw, y - top, 24 * k);
     (globalThis as Record<string, unknown>).__sakuraFriends = this;

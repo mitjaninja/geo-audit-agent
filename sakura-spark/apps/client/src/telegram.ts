@@ -3,7 +3,7 @@ import type { TelegramThemeParams } from './theme.ts';
 /** Только то, что нужно игре, из Telegram.WebApp. Вне Telegram всё — безопасные заглушки. */
 interface WebApp {
   initData: string;
-  initDataUnsafe?: { start_param?: string };
+  initDataUnsafe?: { start_param?: string; user?: { language_code?: string } };
   shareMessage?(id: string, cb?: (sent: boolean) => void): void;
   openInvoice?(url: string, cb?: (status: 'paid' | 'cancelled' | 'failed' | 'pending') => void): void;
   openTelegramLink?(url: string): void;
@@ -45,6 +45,11 @@ export const telegram = {
   },
 
   /** Параметр startapp из ссылки t.me/<bot>?startapp=… (комната чат-режима). */
+  /** Язык интерфейса Telegram у игрока (language_code). */
+  get languageCode(): string | null {
+    return webApp()?.initDataUnsafe?.user?.language_code ?? null;
+  },
+
   get startParam(): string | null {
     return webApp()?.initDataUnsafe?.start_param ?? null;
   },

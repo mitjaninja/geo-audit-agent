@@ -1,6 +1,7 @@
 import Phaser from 'phaser';
 import { telegram } from '../telegram.ts';
 import type { Theme } from '../theme.ts';
+import { t } from '../i18n.ts';
 import { Ui } from '../ui.ts';
 
 export interface ChoiceData {
@@ -42,7 +43,7 @@ export class ChoiceScene extends Phaser.Scene {
       this.ui.text(W / 2, y + 34 * k, o.hint, 12, { color: theme.hint, wrap: pw - 48 * k, align: 'center' });
       y += 84 * k;
     }
-    this.ui.button('Назад', W / 2, y + 6 * k, pw - 48 * k, 'secondary', data.onBack, 44);
+    this.ui.button(t.back, W / 2, y + 6 * k, pw - 48 * k, 'secondary', data.onBack, 44);
     (globalThis as Record<string, unknown>).__sakuraChoice = this;
   }
 }

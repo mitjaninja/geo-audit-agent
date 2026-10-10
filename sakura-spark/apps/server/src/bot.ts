@@ -1,4 +1,6 @@
 import { createHash } from 'node:crypto';
+import { LANGS, TEXTS } from './texts.ts';
+import type { Texts } from './texts.ts';
 
 /** Минимальный клиент Bot API через fetch. fetchImpl подменяется в тестах — сети в тестах нет. */
 export class BotApi {
@@ -19,33 +21,21 @@ export class BotApi {
   }
 }
 
+/** Тексты бота по умолчанию (русский); остальные языки — TEXTS в texts.ts. */
 export const BOT_TEXT = {
-  /** Описание в пустом чате с ботом (до 512 символов). */
-  description:
-    'Sakura Spark — уютная match-3 в аниме-стиле. 🌸\n\n' +
-    'Тёмный дух Курогири украл фестивальные фонари Хоширо, и сакура перестала цвести. ' +
-    'Собирай светящиеся кристаллы по три и больше, открывай районы города и возвращай свет вместе с Микой и тануки Поном.\n\n' +
-    'Играй прямо в Telegram — и зови друзей в чаты.',
-  /** Короткое описание в профиле бота (до 120 символов). */
-  shortDescription: 'Match-3 в аниме-стиле: собирай кристаллы, зажигай фонари и возвращай весну в Хоширо 🌸',
-  commands: [
-    { command: 'start', description: 'Играть' },
-    { command: 'paysupport', description: 'Помощь с покупками' },
-    { command: 'terms', description: 'Условия' },
-    { command: 'notify', description: 'Уведомления вкл/выкл' },
-  ],
-  paysupport:
-    'Помощь с покупками 🌸\n\nЕсли покупка не зачислилась или что-то пошло не так — напиши сюда, что случилось, '
-    + 'и пришли код платежа из чека Telegram. Мы разберёмся и при необходимости вернём Stars.',
-  terms:
-    'Sakura Spark — бесплатная игра. Кристаллы и бустеры — виртуальные предметы для использования только в игре, '
-    + 'они не обмениваются на деньги. Покупки оплачиваются Telegram Stars; по спорным случаям — /paysupport.',
-  paid: (what: string) => `Готово! ${what} — уже в игре 🌸`,
-  start: (name: string) =>
-    `Привет, ${name}! 🌸\n\nКурогири украл фестивальные фонари, и сакура в Хоширо перестала цвести. ` +
-    'Помоги Мике вернуть свет — собирай кристаллы по три и больше.',
-  play: 'Играть',
+  description: TEXTS.ru.bot.description,
+  shortDescription: TEXTS.ru.bot.shortDescription,
+  commands: commandsFor(TEXTS.ru),
+  paysupport: TEXTS.ru.bot.paysupport,
+  terms: TEXTS.ru.bot.terms,
+  paid: (_what: string) => TEXTS.ru.bot.paid,
+  start: TEXTS.ru.bot.start,
+  play: TEXTS.ru.bot.play,
 } as const;
+
+function commandsFor(tx: Texts): { command: string; description: string }[] {
+  return (['start', 'paysupport', 'terms', 'notify'] as const).map((command) => ({ command, description: tx.bot.commands[command] }));
+}
 
 /**
  * Токен для заголовка X-Telegram-Bot-Api-Secret-Token. Telegram разрешает в нём только A-Z, a-z, 0-9, _ и -,
@@ -57,9 +47,14 @@ export function webhookToken(secret: string): string {
 
 /** Профиль бота: описание, короткое описание, команды. Не зависит от адреса сервера. */
 export async function setupProfile(api: BotApi): Promise<void> {
-  await api.call('setMyDescription', { description: BOT_TEXT.description });
-  await api.call('setMyShortDescription', { short_description: BOT_TEXT.shortDescription });
-  await api.call('setMyCommands', { commands: BOT_TEXT.commands });
+  // по умолчанию — русский; для en/es/pt Telegram покажет свой вариант по языку пользователя
+  for (const lang of LANGS) {
+    const tx = TEXTS[lang];
+    const code = lang === 'ru' ? {} : { language_code: lang };
+    await api.call('setMyDescription', { description: tx.bot.description, ...code });
+    await api.call('setMyShortDescription', { short_description: tx.bot.shortDescription, ...code });
+    await api.call('setMyCommands', { commands: commandsFor(tx), ...code });
+  }
 }
 
 /** Настройка бота: вебхук с секретом и кнопка меню, открывающая игру. */

@@ -3,8 +3,7 @@ import { gameOptionsFromLevel, Match3Game } from '@sakura/core';
 import type { CascadeStep, GameEvent, GameOptions, IntroLine, LevelDef, Move, Pos, Swap } from '@sakura/core';
 import type { ClientEvent, Item, LivesView, ShopView, WalletView } from '../api.ts';
 import { GAME_ITEMS, ITEM_INFO, nextExtendPrice } from '../economy.ts';
-import { goalLabel } from '../i18n.ts';
-import { formatTime, t } from '../i18n.ts';
+import { formatTime, goalLabel, localized, t } from '../i18n.ts';
 import { swipeToSwap, tap } from '../input.ts';
 import { cellAt, cellCenter, computeLayout } from '../layout.ts';
 import type { Layout } from '../layout.ts';
@@ -226,7 +225,7 @@ export class GameScene extends Phaser.Scene {
     }
     if (first && level.tutorial) {
       this.gate = level.tutorial.swap;
-      this.showTutorial(level.tutorial.text, level.tutorial.swap);
+      this.showTutorial(localized(level.tutorial), level.tutorial.swap);
     }
     if (first) intros.add(level.id);
     if (this.timeLeft !== undefined) this.deadline = performance.now() + this.timeLeft * 1000;
@@ -241,7 +240,7 @@ export class GameScene extends Phaser.Scene {
     const w = Math.min(W - 24 * k, 420 * k);
     const x = (W - w) / 2;
     // сначала текст: высота пузыря — по нему, чтобы длинная реплика не налезала на подсказку
-    const text = this.add.text(0, 0, line.text, {
+    const text = this.add.text(0, 0, localized(line), {
       fontFamily: FONT, fontSize: `${Math.round(15 * k)}px`, color: theme.text, wordWrap: { width: w - 100 * k },
     });
     const h = Math.max(112 * k, text.height + (hint ? 64 : 48) * k);

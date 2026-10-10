@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readdirSync, readFileSync } from 'node:fs';
 import { test } from 'node:test';
-import { gameOptionsFromLevel, LevelError, Match3Game, parseLevel, Rng } from '../src/index.ts';
+import { gameOptionsFromLevel, LevelError, lintLevel, Match3Game, parseLevel, Rng } from '../src/index.ts';
 
 const LEVELS_DIR = new URL('../../../levels/', import.meta.url);
 
@@ -70,6 +70,7 @@ test('every level in levels/ is valid, named by id, and playable', () => {
     assert.equal(file, `${String(level.id).padStart(4, '0')}.json`);
     assert.ok(!ids.has(level.id));
     ids.add(level.id);
+    assert.deepEqual(lintLevel(level), [], file);
     // проходимость: простой жадный выбор хода (больше снятых фишек, цели не учитывает) с двойным
     // запасом ходов иногда выигрывает. Это ловит сломанный уровень; точная сложность — дело автотеста
     let wins = 0;
@@ -107,4 +108,16 @@ test('intro lines and tutorial swap', () => {
   assert.match(errorsOf({ ...base, intro: [{ speaker: 'mika', text: 'x'.repeat(161) }] }).join(), /intro/);
   assert.match(errorsOf({ ...base, tutorial: { swap: [[0, 0], [4, 4]], text: 'нет' } }).join(), /not a valid move/);
   assert.match(errorsOf({ ...valid, tutorial: { swap: [[0, 0], [0, 1]], text: 'нет' } }).join(), /fixed layout/);
+});
+
+test('lint: a cell under a portal entry that only gets spawned pieces is reported; a hole there fixes it', () => {
+  const base = {
+    id: 99, width: 5, height: 5, colors: 4, moves: 20, difficulty: 'normal', stars: [1, 2, 3],
+    goals: [{ type: 'score', target: 100 }], portals: [{ from: [1, 0], to: [3, 4] }],
+  };
+  const bad = lintLevel(parseLevel(base));
+  assert.equal(bad.length, 1);
+  assert.match(bad[0]!, /cell 2,0: pieces appear out of nowhere/);
+  const fixed = parseLevel({ ...base, shape: ['#####', '#####', '_####', '#####', '#####'] });
+  assert.deepEqual(lintLevel(fixed), []);
 });

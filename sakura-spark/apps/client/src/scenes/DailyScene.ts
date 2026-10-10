@@ -5,6 +5,7 @@ import { rewardIcon, rewardText, taskText } from '../meta.ts';
 import { telegram } from '../telegram.ts';
 import { hexToInt } from '../theme.ts';
 import type { Theme } from '../theme.ts';
+import { t } from '../i18n.ts';
 import { Ui } from '../ui.ts';
 
 export type MetaClaimRequest =
@@ -59,7 +60,7 @@ export class DailyScene extends Phaser.Scene {
     const top = telegram.insets().top * k + 12 * k;
     let y = top + 36 * k;
 
-    this.ui.text(W / 2, y, 'Награды дня', 24, { bold: true });
+    this.ui.text(W / 2, y, t.daily.title, 24, { bold: true });
     y += 30 * k;
     if (data.notice) {
       this.ui.text(W / 2, y, data.notice, 14, { bold: true, color: theme.button, wrap: pw - 48 * k, align: 'center' });
@@ -68,7 +69,7 @@ export class DailyScene extends Phaser.Scene {
 
     // календарь входа
     y += 6 * k;
-    this.ui.text(left, y, 'Календарь входа', 17, { bold: true, originX: 0 });
+    this.ui.text(left, y, t.daily.calendar, 17, { bold: true, originX: 0 });
     y += 22 * k;
     const gap = 6 * k;
     const cw = (pw - 48 * k - gap * 6) / 7;
@@ -88,27 +89,27 @@ export class DailyScene extends Phaser.Scene {
     y += ch + 30 * k;
     const todayReward = meta.login.rewards[meta.login.position];
     if (!meta.login.claimedToday && todayReward) {
-      this.ui.button('Забрать награду', W / 2, y, pw - 48 * k, 'primary', () => void this.claim({ kind: 'login' }), 42);
+      this.ui.button(t.daily.claimReward, W / 2, y, pw - 48 * k, 'primary', () => void this.claim({ kind: 'login' }), 42);
       y += 22 * k;
       this.ui.text(W / 2, y + 8 * k, rewardText(todayReward), 12, { color: theme.hint });
       y += 30 * k;
     } else {
-      this.ui.text(W / 2, y - 6 * k, 'Следующая награда — завтра', 14, { color: theme.hint });
+      this.ui.text(W / 2, y - 6 * k, t.daily.tomorrow, 14, { color: theme.hint });
       y += 22 * k;
     }
 
     // помощь застрявшему
     if (meta.stuck) {
       y += 10 * k;
-      this.ui.text(left, y, `Уровень ${meta.stuck.levelId} не даётся?`, 16, { bold: true, originX: 0 });
-      this.ui.text(left, y + 20 * k, `Подарок: ${rewardText(meta.stuck.reward)}`, 12, { color: theme.hint, originX: 0, wrap: pw - 170 * k });
-      this.ui.button('Забрать', right - 48 * k, y + 8 * k, 96 * k, 'primary', () => void this.claim({ kind: 'stuck' }), 36);
+      this.ui.text(left, y, t.daily.stuck(meta.stuck.levelId), 16, { bold: true, originX: 0 });
+      this.ui.text(left, y + 20 * k, t.daily.gift(rewardText(meta.stuck.reward)), 12, { color: theme.hint, originX: 0, wrap: pw - 170 * k });
+      this.ui.button(t.claim, right - 48 * k, y + 8 * k, 96 * k, 'primary', () => void this.claim({ kind: 'stuck' }), 36);
       y += 52 * k;
     }
 
     // задания
     y += 10 * k;
-    this.ui.text(left, y, 'Задания на сегодня', 17, { bold: true, originX: 0 });
+    this.ui.text(left, y, t.daily.tasks, 17, { bold: true, originX: 0 });
     y += 30 * k;
     meta.tasks.forEach((task, slot) => {
       const done = task.progress >= task.target;
@@ -116,7 +117,7 @@ export class DailyScene extends Phaser.Scene {
       this.ui.text(left, y + 19 * k, rewardText(task.reward), 12, { color: theme.hint, originX: 0, wrap: pw - 170 * k });
       // очки — в процентах: «12 340/25 000» не влезает в кнопку
       const progressLabel = task.target >= 1000 ? `${Math.floor((task.progress / task.target) * 100)}%` : `${task.progress}/${task.target}`;
-      const label = task.claimed ? '✓' : done ? 'Забрать' : progressLabel;
+      const label = task.claimed ? '✓' : done ? t.claim : progressLabel;
       this.ui.button(label, right - 48 * k, y + 8 * k, 96 * k, done && !task.claimed ? 'primary' : 'disabled',
         () => void this.claim({ kind: 'task', slot }), 36);
       y += 52 * k;
@@ -127,22 +128,22 @@ export class DailyScene extends Phaser.Scene {
     const chests = meta.chests.filter((c, i) => i === meta.chests.length - 1 || c.tiers.some((t) => t.available && !t.claimed)).slice(-2);
     if (chests.length > 0) {
       y += 4 * k;
-      this.ui.text(left, y, 'Сундуки районов', 17, { bold: true, originX: 0 });
+      this.ui.text(left, y, t.daily.chests, 17, { bold: true, originX: 0 });
       y += 30 * k;
       for (const c of chests) {
-        this.ui.text(left, y, names[c.episode - 1]?.name ?? `Район ${c.episode}`, 15, { originX: 0 });
-        this.ui.text(left, y + 19 * k, `★ ${c.stars} из 45`, 12, { color: theme.hint, originX: 0 });
-        c.tiers.forEach((t, i) => {
-          const kind = t.available && !t.claimed ? 'primary' : 'disabled';
-          this.ui.button(t.claimed ? '✓' : `${t.tier} ★`, right - 34 * k - (1 - i) * 76 * k, y + 8 * k, 68 * k, kind,
-            () => void this.claim({ kind: 'chest', episode: c.episode, tier: t.tier }), 36);
+        this.ui.text(left, y, names[c.episode - 1]?.name ?? t.district(c.episode), 15, { originX: 0 });
+        this.ui.text(left, y + 19 * k, t.daily.chestStars(c.stars), 12, { color: theme.hint, originX: 0 });
+        c.tiers.forEach((tier, i) => {
+          const kind = tier.available && !tier.claimed ? 'primary' : 'disabled';
+          this.ui.button(tier.claimed ? '✓' : `${tier.tier} ★`, right - 34 * k - (1 - i) * 76 * k, y + 8 * k, 68 * k, kind,
+            () => void this.claim({ kind: 'chest', episode: c.episode, tier: tier.tier }), 36);
         });
         y += 52 * k;
       }
     }
 
     y += 16 * k;
-    this.ui.button('Закрыть', W / 2, y, pw - 48 * k, 'secondary', () => data.onClose());
+    this.ui.button(t.close, W / 2, y, pw - 48 * k, 'secondary', () => data.onClose());
     y += 40 * k;
     panel.fillStyle(hexToInt(theme.panel), 1).fillRoundedRect(x, top, pw, y - top, 24 * k);
     (globalThis as Record<string, unknown>).__sakuraDaily = this;
@@ -168,7 +169,7 @@ export class DailyScene extends Phaser.Scene {
     this.busy = true;
     const r = await this.data_.onClaim(c);
     if (!this.scene.isActive()) return;
-    if (r.meta) this.scene.restart({ ...this.data_, meta: r.meta, notice: r.reward ? `Получено: ${rewardText(r.reward)}` : undefined });
-    else this.scene.restart({ ...this.data_, notice: r.error ?? 'Не получилось — попробуй ещё раз' });
+    if (r.meta) this.scene.restart({ ...this.data_, meta: r.meta, notice: r.reward ? t.got(rewardText(r.reward)) : undefined });
+    else this.scene.restart({ ...this.data_, notice: r.error ?? t.failed });
   }
 }

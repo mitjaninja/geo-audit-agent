@@ -9,9 +9,15 @@ import { DEFAULT_ECONOMY, extendPrice, GAME_ITEMS, isItem, ITEMS, START_ITEMS } 
 import type { Economy, Item, ProductId } from './economy.ts';
 import { ConfigError, levelForAttempt, lossStreakForAssist, parseRemoteConfig, resolveConfig, tweakLevel } from './remote.ts';
 import type { Effective, RemoteConfig } from './remote.ts';
+import { textsFor } from './texts.ts';
+import type { Texts } from './texts.ts';
+import {
+  activeFestival, CARD_DROP_CHANCE, CARD_SETS, CARD_TITLES, completedFrames, FESTIVAL_STEP, festivalFinal, festivalLevelId, FESTIVALS,
+  FRAMES, isFestivalLevel, PASS_TIERS, POINTS_PER_TIER, seasonOf,
+} from './season.ts';
 import {
   addCard, CALENDAR, calendarReward, CHEST_TIERS, CHESTS, dayNumber, episodeOf, grant, LEVELS_PER_EPISODE, progressTasks,
-  todayTasks, WHEEL, wheelPrize,
+  streakBoosters, todayTasks, WHEEL, wheelPrize,
 } from './meta.ts';
 import type { ChestTier, MetaState, Reward, TaskKind, TaskState } from './meta.ts';
 
@@ -117,6 +123,8 @@ export interface MeResponse {
   readonly serverTime: number;
   /** Закрытые ворота района, у которых стоит игрок. */
   readonly gate: GateView | null;
+  /** Серия побед (0 — нет или выключена). */
+  readonly streak: number;
   /** Ходы и время уровней, сдвинутые remote config. */
   readonly levelOverrides: Record<number, { readonly moves?: number; readonly timeLimit?: number }>;
 }
@@ -134,11 +142,18 @@ export interface StartResponse {
    */
   readonly assist: number;
   readonly startBoosters: readonly Item[];
+  /** Серия побед и бустеры, которые она дала бесплатно (они уже в startBoosters). */
+  readonly streak?: number;
+  readonly freeBoosters?: readonly Item[];
 }
 
 export interface FinishResponse {
   /** Победа привела к воротам нового района. */
   readonly gate?: GateView;
+  /** Выпала карточка коллекции. */
+  readonly drop?: { readonly card: string; readonly title: string };
+  /** Награда за уровень фестиваля (последний — карточка и рамка). */
+  readonly festivalReward?: Reward;
   readonly result: 'won' | 'lost';
   readonly score: number;
   readonly stars: number;
@@ -164,8 +179,8 @@ export interface ServiceDeps {
   readonly log?: (msg: string) => void;
   /** Случайность колеса (в тестах — подменяется). */
   readonly random?: () => number;
-  /** Отправить пуш в личку от бота (лимит в день сервис уже проверил). false — не дошёл. */
-  readonly sendPush?: (userId: number, text: string) => Promise<boolean>;
+  /** Отправить пуш в личку от бота (лимит в день сервис уже проверил); texts — язык получателя. false — не дошёл. */
+  readonly sendPush?: (userId: number, text: string, texts: Texts) => Promise<boolean>;
 }
 
 const emptyProgress = (levelId: number): LevelProgress => ({ levelId, bestScore: 0, stars: 0, wins: 0, losses: 0, lossStreak: 0 });
@@ -185,13 +200,26 @@ export class GameService {
   readonly economy: Economy;
   private readonly log: (msg: string) => void;
   private readonly random: () => number;
-  private readonly sendPush: (userId: number, text: string) => Promise<boolean>;
+  private readonly sendPush: (userId: number, text: string, texts: Texts) => Promise<boolean>;
   /** Действующий remote config (кеш; сервер один, правки идут через setConfig). */
   private config: RemoteConfig | null = null;
+  private readonly festivalLevels = new Map<number, LevelDef>();
+
+  /** Уровень карты или фестиваля. */
+  private levelById(id: number): LevelDef | undefined {
+    return this.levels.get(id) ?? this.festivalLevels.get(id);
+  }
 
   constructor(deps: ServiceDeps) {
     this.store = deps.store;
     this.levels = deps.levels;
+    // уровни фестивалей — копии настроенных уровней карты под своими id (вне карты)
+    for (const [fi, f] of FESTIVALS.entries()) {
+      f.sourceLevels.forEach((src, i) => {
+        const l = deps.levels.get(src);
+        if (l) this.festivalLevels.set(festivalLevelId(fi, i + 1), { ...l, id: festivalLevelId(fi, i + 1), intro: [{ speaker: 'mika', text: f.intro }] });
+      });
+    }
     this.now = deps.now ?? Date.now;
     this.newSeed = deps.newSeed ?? (() => randomInt(2 ** 31));
     this.newId = deps.newId ?? randomUUID;
@@ -305,11 +333,16 @@ export class GameService {
     return dayNumber(this.now(), (await this.configFor(userId)).economy.meta.dayOffsetHours);
   }
 
-  /** Пуш от бота: не больше pushesPerDay в день, только тем, кто разрешил писать и не выключил уведомления. */
-  async push(userId: number, text: string): Promise<boolean> {
+  /**
+   * Пуш от бота на языке получателя: не больше pushesPerDay в день, только тем, кто разрешил писать
+   * и не выключил уведомления. text строится по словарю получателя.
+   */
+  async push(userId: number, build: (tx: Texts) => string): Promise<boolean> {
     const limit = (await this.social(userId)).pushesPerDay;
     if (!(await this.store.reservePush(userId, await this.today(userId), limit))) return false;
-    const ok = await this.sendPush(userId, text).catch(() => false);
+    const tx = textsFor((await this.store.getUser(userId))?.languageCode);
+    const text = build(tx);
+    const ok = await this.sendPush(userId, text, tx).catch(() => false);
     if (ok) await this.track(userId, 'push_sent', null, { text: text.slice(0, 60) });
     return ok;
   }
@@ -317,6 +350,11 @@ export class GameService {
   /** Бот не смог написать (игрок заблокировал бота) — больше не пытаемся. */
   async pushBlocked(userId: number): Promise<void> {
     await this.store.setAllowsPm(userId, false);
+  }
+
+  /** language_code игрока из Telegram (null — неизвестен). */
+  async languageOf(userId: number): Promise<string | null> {
+    return (await this.store.getUser(userId))?.languageCode ?? null;
   }
 
   async setNotify(userId: number, on: boolean): Promise<void> {
@@ -329,7 +367,7 @@ export class GameService {
     await this.store.addFriends(user.id, referrerId, 'ref', this.now());
     await this.track(user.id, 'referral', null, { referrerId });
     const s = await this.social(referrerId);
-    void this.push(referrerId, `${user.firstName || 'Друг'} пришёл по твоему приглашению! Когда дойдёт до уровня ${s.referralLevel} — получишь ${s.referralCrystals} 💎`);
+    void this.push(referrerId, (tx) => tx.push.referralJoined(user.firstName || tx.bot.friend, s.referralLevel, s.referralCrystals));
   }
 
   /** Друзья — те, кто играл в одном челлендже, дарил жизнь в чате или пришёл по приглашению. */
@@ -364,23 +402,23 @@ export class GameService {
     await this.store.addMail({ fromId: userId, toId: to, kind: 'life', episode: null, day, now: this.now() });
     await this.track(userId, 'life_sent', null, { to });
     const me = (await this.store.getUser(userId))!;
-    void this.push(to, `${me.firstName || 'Друг'} подарил тебе жизнь ❤`);
+    void this.push(to, (tx) => tx.push.lifeGift(me.firstName || tx.bot.friend));
     return { giftsLeft: s.giftsPerDay - sent.length - 1 };
   }
 
   /** Попросить жизнь у всех друзей — раз в день каждому. */
   async askLives(userId: number): Promise<{ asked: number }> {
-    return this.askFriends(userId, 'ask_life', null, (name) => `${name} просит жизнь — подари в игре ❤`);
+    return this.askFriends(userId, 'ask_life', null, (tx, name) => tx.push.askLife(name));
   }
 
-  private async askFriends(userId: number, kind: 'ask_life' | 'ask_key', episode: number | null, text: (name: string) => string): Promise<{ asked: number }> {
+  private async askFriends(userId: number, kind: 'ask_life' | 'ask_key', episode: number | null, text: (tx: Texts, name: string) => string): Promise<{ asked: number }> {
     const day = await this.today(userId);
     const already = new Set(await this.store.sentMail(userId, day, kind));
     const me = (await this.store.getUser(userId))!;
     const friends = (await this.store.getFriends(userId, 100)).filter((f) => !already.has(f.id));
     for (const f of friends) {
       await this.store.addMail({ fromId: userId, toId: f.id, kind, episode, day, now: this.now() });
-      void this.push(f.id, text(me.firstName || 'Друг'));
+      void this.push(f.id, (tx) => text(tx, me.firstName || tx.bot.friend));
     }
     if (friends.length > 0) await this.track(userId, kind, null, { friends: friends.length, episode });
     return { asked: friends.length };
@@ -454,7 +492,7 @@ export class GameService {
   async askKeys(userId: number): Promise<{ asked: number }> {
     const g = await this.gate(userId);
     if (!g) throw new ServiceError('not_available', 409);
-    return this.askFriends(userId, 'ask_key', g.episode, (name) => `${name} просит ключ к новому району — помоги в игре 🔑`);
+    return this.askFriends(userId, 'ask_key', g.episode, (tx, name) => tx.push.askKey(name));
   }
 
   async buyGate(userId: number): Promise<{ wallet: WalletView }> {
@@ -475,7 +513,7 @@ export class GameService {
     let n = 0;
     for (const u of await this.store.livesRefilled(this.now(), LIFE_REGEN_MS, MAX_LIVES)) {
       await this.store.setLivesPushAt(u.id, u.fullAt);
-      if (await this.push(u.id, 'Жизни восстановились — Мика ждёт на карте! ❤ ×5')) n++;
+      if (await this.push(u.id, (tx) => tx.push.livesBack)) n++;
     }
     return n;
   }
@@ -487,11 +525,11 @@ export class GameService {
       const rs = await this.social(user.referrerId);
       await this.store.transact(user.referrerId, (w) => ({ crystals: w.crystals + rs.referralCrystals }));
       await this.track(user.referrerId, 'referral_reward', null, { friendId: user.id, crystals: rs.referralCrystals });
-      void this.push(user.referrerId, `${user.firstName || 'Друг'} дошёл до уровня ${rs.referralLevel} — тебе ${rs.referralCrystals} 💎!`);
+      void this.push(user.referrerId, (tx) => tx.push.referralReward(user.firstName || tx.bot.friend, rs.referralLevel, rs.referralCrystals));
     }
     if (score <= prevBest) return;
     for (const f of await this.store.levelScores(user.id, levelId)) {
-      if (f.id !== user.id && f.score < score && f.score >= prevBest) void this.push(f.id, `${user.firstName || 'Друг'} обогнал тебя на уровне ${levelId}! Отыграешься?`);
+      if (f.id !== user.id && f.score < score && f.score >= prevBest) void this.push(f.id, (tx) => tx.push.overtook(user.firstName || tx.bot.friend, levelId));
     }
   }
 
@@ -521,6 +559,7 @@ export class GameService {
     return {
       levelOverrides: this.levelOverrides(eff),
       gate: this.gateOf(user, (await this.store.getWallet(user.id)).meta, eff.economy, this.now()),
+      streak: eff.economy.events.winStreak ? (await this.store.getWallet(user.id)).meta.streak ?? 0 : 0,
       user: { id: user.id, firstName: user.firstName },
       lives: view(user.lives, this.now()),
       wallet: await this.wallet(user.id),
@@ -537,12 +576,17 @@ export class GameService {
 
   /** Начать попытку: проверить доступ к уровню и жизни, выдать сид, зарезервировать жизнь. */
   async startAttempt(userId: number, levelId: number, boosters: readonly unknown[] = []): Promise<StartResponse> {
-    const startBoosters = parseStartBoosters(boosters);
-    const level = this.levels.get(levelId);
+    const chosen = parseStartBoosters(boosters);
+    const level = this.levelById(levelId);
     if (!level) throw new ServiceError('unknown_level', 404);
     let user = (await this.store.getUser(userId))!;
-    if (levelId > user.maxLevel) throw new ServiceError('level_locked', 403, { maxLevel: user.maxLevel });
-    if (levelId === user.maxLevel) {
+    if (isFestivalLevel(levelId)) {
+      // фестиваль: только пока идёт и по порядку
+      const f = await this.festivalView(userId);
+      if (!f || levelId !== f.levels[f.done]) throw new ServiceError('level_locked', 403, { maxLevel: user.maxLevel });
+    } else if (levelId > user.maxLevel) {
+      throw new ServiceError('level_locked', 403, { maxLevel: user.maxLevel });
+    } else if (levelId === user.maxLevel) {
       const gate = this.gateOf(user, (await this.store.getWallet(userId)).meta, (await this.configFor(userId)).economy, this.now());
       if (gate) throw new ServiceError('episode_locked', 403, { gate });
     }
@@ -562,7 +606,11 @@ export class GameService {
 
     const progress = (await this.store.getLevelProgress(userId, levelId)) ?? emptyProgress(levelId);
     const eff = await this.configFor(userId);
-    await this.takeStartBoosters(userId, startBoosters);
+    // серия побед даёт бустеры старта бесплатно; оплачиваются только выбранные сверх неё
+    const streak = eff.economy.events.winStreak ? (await this.store.getWallet(userId)).meta.streak ?? 0 : 0;
+    const free = streakBoosters(streak);
+    await this.takeStartBoosters(userId, chosen.filter((i) => !free.includes(i)));
+    const startBoosters = START_ITEMS.filter((i) => chosen.includes(i) || free.includes(i));
     const lives = spend(user.lives, now);
     const tweak = tweakLevel(level, eff.levels[String(levelId)]);
     const attempt = {
@@ -573,12 +621,12 @@ export class GameService {
     };
     await this.store.createAttempt(attempt, lives);
     await this.track(userId, 'level_start', levelId, {
-      attemptId: attempt.id, assist: attempt.assist, boosters: startBoosters, ...expProps(eff),
+      attemptId: attempt.id, assist: attempt.assist, boosters: startBoosters, ...(streak > 0 ? { streak } : {}), ...expProps(eff),
       ...(tweak.moves !== null ? { moves: tweak.moves } : {}), ...(tweak.timeLimit !== null ? { timeLimit: tweak.timeLimit } : {}),
     });
     return {
       attemptId: attempt.id, seed: attempt.seed, level: levelForAttempt(level, attempt), lives: view(lives, now), wallet: await this.wallet(userId),
-      assist: attempt.assist, startBoosters,
+      assist: attempt.assist, startBoosters, streak, freeBoosters: free,
     };
   }
 
@@ -595,7 +643,7 @@ export class GameService {
       await this.closeAsLoss(attempt, 'rejected', [], false);
       throw new ServiceError('invalid_replay', 400);
     }
-    const level = levelForAttempt(this.levels.get(attempt.levelId)!, attempt);
+    const level = levelForAttempt(this.levelById(attempt.levelId)!, attempt);
     let game: Match3Game;
     try {
       game = Match3Game.replay(this.optionsFor(attempt, level), parsed);
@@ -628,7 +676,8 @@ export class GameService {
       wins: prev.wins + 1, lossStreak: 0,
     };
     const lives = refund(user.lives, now);
-    const maxLevel = Math.max(user.maxLevel, level.id + 1);
+    const festival = isFestivalLevel(level.id);
+    const maxLevel = festival ? user.maxLevel : Math.max(user.maxLevel, level.id + 1);
     const closed = await this.store.closeAttempt(attempt.id, userId, {
       status: 'won', finishedAt: now, score: game.score, stars: game.stars, swaps: parsed, lives, progress, maxLevel,
     });
@@ -637,9 +686,23 @@ export class GameService {
     const e = (await this.configFor(userId)).economy;
     const crossed = user.maxLevel <= e.starter.afterLevel && maxLevel > e.starter.afterLevel;
     const day = dayNumber(now, e.meta.dayOffsetHours);
+    const fest = festival ? await this.festivalView(userId) : null;
+    // карточка «Жители Хоширо» иногда выпадает за победу на карте
+    const dropRoll = this.random();
+    const district = CARD_SETS[1]!.cards;
+    const drop = !festival && dropRoll < CARD_DROP_CHANCE ? district[Math.floor((dropRoll / CARD_DROP_CHANCE) * district.length)]! : null;
+    let festivalReward: Reward | null = null;
     await this.store.transact(userId, (w) => {
-      const meta = progressTasks(w.meta, userId, day, { win: 1, stars: game.stars, threeStars: game.stars === 3 ? 1 : 0, score: game.score });
+      let meta: MetaState = { ...progressTasks(w.meta, userId, day, { win: 1, stars: game.stars, threeStars: game.stars === 3 ? 1 : 0, score: game.score }), streak: (w.meta.streak ?? 0) + 1 };
+      meta = addPassPoints(meta, now, 1 + (game.stars === 3 ? 1 : 0));
+      if (drop) meta = addCard(meta, { card: drop }, completedFrames);
+      if (fest) {
+        const done = fest.done + 1;
+        festivalReward = done === fest.levels.length ? { ...FESTIVAL_STEP, ...festivalFinal(fest.festival) } : FESTIVAL_STEP;
+        meta = addCard({ ...meta, festival: { id: fest.festival.id, endsAt: fest.endsAt, done } }, festivalReward, completedFrames);
+      }
       return {
+        ...(fest && festivalReward ? grant(w, festivalReward, now) : {}),
         piggy: Math.min(e.piggy.max, w.piggy + e.piggy.perWin),
         ...(crossed && !w.starterBought && w.starterUntil === 0 ? { starterUntil: now + e.starter.windowMs } : {}),
         // защита от выгорания считает дни с открытия последнего уровня
@@ -651,10 +714,13 @@ export class GameService {
       movesLeft: level.timeLimit === undefined ? game.movesLeft : null, assist: attempt.assist,
     });
     await this.afterWin(user, level.id, prev.bestScore, game.score, maxLevel);
+    if (maxLevel > user.maxLevel) await this.raceProgress(userId);
     const gate = maxLevel > user.maxLevel ? await this.gate(userId) : null;
     return {
       result: 'won', score: game.score, stars: game.stars, bestScore: progress.bestScore, lives: view(lives, now), maxLevel,
       wallet: await this.wallet(userId), ...(gate ? { gate } : {}),
+      ...(drop ? { drop: { card: drop, title: CARD_TITLES[drop] ?? drop } } : {}),
+      ...(festivalReward ? { festivalReward } : {}),
     };
   }
 
@@ -727,7 +793,7 @@ export class GameService {
     if (!(await this.store.settleRoom(room.id))) return;
     const now = this.now();
     const raw = await this.store.getRoomResults(room.id);
-    const give = async (userId: number, r: Reward, text: string) => {
+    const give = async (userId: number, r: Reward, text: (tx: Texts) => string) => {
       await this.store.transact(userId, (w) => grant(w, r, now));
       void this.push(userId, text);
     };
@@ -737,13 +803,13 @@ export class GameService {
       for (const [i, r] of raw.entries()) {
         const crystals = prizes[i] ?? 0;
         await give(r.userId, { ...CHALLENGE_ALL, ...(crystals ? { crystals } : {}) },
-          `Челлендж чата завершён: ты ${i + 1}-й из ${raw.length}. Награда: ${crystals ? `${crystals} 💎 и ` : ''}бустер «Перемешать»`);
+          (tx) => tx.push.challengeEnded(i + 1, raw.length, crystals));
       }
     } else if (room.mode === 'team' && room.progress >= room.target) {
-      for (const r of raw.filter((x) => x.contributed > 0)) await give(r.userId, TEAM_CHEST, 'Командный фонарь зажжён! Сундук: 3 💎, молот и радужный кристалл');
+      for (const r of raw.filter((x) => x.contributed > 0)) await give(r.userId, TEAM_CHEST, (tx) => tx.push.teamLit);
     } else if (room.mode === 'duel') {
       const w = duelWinner(duelOrder(raw));
-      if (w) await give(w.userId, DUEL_PRIZE, 'Ты победил в дуэли! Награда — радужный кристалл');
+      if (w) await give(w.userId, DUEL_PRIZE, (tx) => tx.push.duelWon);
     }
     await this.track(room.creatorId, 'room_settled', room.levelId, { roomId: room.id, mode: room.mode, players: raw.length });
     this.onRoomChanged(room.id);
@@ -818,6 +884,7 @@ export class GameService {
       roomId: attempt.roomId, attemptId: attempt.id, score: game.score, stars: game.stars, won, movesLeft: game.movesLeft,
     });
     await this.bumpTasks(user.id, { room: 1, score: game.score });
+    await this.store.transact(user.id, (w) => ({ meta: addPassPoints(w.meta, now, 1) }));
     if (room.creatorId !== user.id) await this.befriend(user.id, room.creatorId, 'room');
     if (room.mode === 'team' && !room.settled) {
       const p = await this.store.addRoomProgress(room.id, contributed);
@@ -912,7 +979,7 @@ export class GameService {
     if (!attempt || attempt.userId !== userId) throw new ServiceError('not_found', 404);
     if (attempt.status !== 'open') throw new ServiceError('not_open', 409);
     const moves = parseMoves(input);
-    const level = levelForAttempt(this.levels.get(attempt.levelId)!, attempt);
+    const level = levelForAttempt(this.levelById(attempt.levelId)!, attempt);
     if (!moves || level.timeLimit !== undefined) throw new ServiceError('bad_request', 400);
     let game: Match3Game;
     try {
@@ -1008,7 +1075,7 @@ export class GameService {
       }
       reward = r.reward;
       const g = grant(r.cost ? { ...x, crystals: x.crystals - r.cost } : x, r.reward, now);
-      return { ...(r.cost ? { crystals: x.crystals - r.cost } : {}), ...g, meta: addCard(r.meta, r.reward) };
+      return { ...(r.cost ? { crystals: x.crystals - r.cost } : {}), ...g, meta: addCard(r.meta, r.reward, completedFrames) };
     });
     if (error) throw error;
     return { reward: reward!, wallet: this.walletView(w!), lives: view(w!.lives, now), meta: await this.metaView(userId) };
@@ -1090,6 +1157,136 @@ export class GameService {
     return r;
   }
 
+  // ---------- события: гонка фонарей ----------
+
+  /** Гонка игрока: идёт или закончилась, но итог ещё не показан; canJoin — можно вступить в новую. */
+  async raceView(userId: number): Promise<RaceView> {
+    const ev = (await this.configFor(userId)).economy.events;
+    const now = this.now();
+    const user = (await this.store.getUser(userId))!;
+    const cur = await this.store.currentRace(userId);
+    const mine = cur?.members.find((m) => m.userId === userId);
+    const ended = cur ? now >= cur.race.endsAt || cur.members.every((m) => m.place !== null) : true;
+    const show = Boolean(cur && mine && (!ended || !mine.seen));
+    const canJoin = !show && user.maxLevel + ev.raceTarget - 1 <= this.levels.size;
+    return {
+      race: show && cur ? {
+        id: cur.race.id, endsAt: cur.race.endsAt, target: cur.race.target, ended, gathering: now < cur.race.createdAt + ev.raceGatherMinutes * 60_000,
+        members: cur.members.map((m) => ({ name: m.firstName, progress: m.progress, place: m.place, me: m.userId === userId })),
+      } : null,
+      canJoin, target: ev.raceTarget, size: ev.raceSize, hours: ev.raceHours, prizes: ev.racePrizes, serverTime: now,
+    };
+  }
+
+  async joinRace(userId: number): Promise<RaceView> {
+    const v = await this.raceView(userId);
+    if (!v.canJoin) throw new ServiceError('not_available', 409);
+    const ev = (await this.configFor(userId)).economy.events;
+    const user = (await this.store.getUser(userId))!;
+    const race = await this.store.joinRace({ userId, firstName: user.firstName }, this.now(), ev.raceSize, ev.raceTarget, ev.raceHours * 3600_000, ev.raceGatherMinutes * 60_000);
+    await this.track(userId, 'race_join', null, { raceId: race.id });
+    return this.raceView(userId);
+  }
+
+  async raceSeen(userId: number): Promise<void> {
+    const cur = await this.store.currentRace(userId);
+    if (cur) await this.store.markRaceSeen(cur.race.id, userId);
+  }
+
+  /** Новый пройденный уровень двигает фонарик в гонке; финиш в тройке — приз. */
+  private async raceProgress(userId: number): Promise<void> {
+    const cur = await this.store.currentRace(userId);
+    if (!cur) return;
+    const m = await this.store.advanceRace(cur.race.id, userId, this.now());
+    if (!m?.place) return;
+    const prizes = (await this.configFor(userId)).economy.events.racePrizes;
+    const crystals = prizes[m.place - 1] ?? 0;
+    if (crystals > 0) {
+      await this.store.transact(userId, (w) => grant(w, { crystals, ...(m.place === 1 ? { items: { rainbow: 1 } } : {}) }, this.now()));
+    }
+    await this.track(userId, 'race_finish', null, { raceId: cur.race.id, place: m.place, crystals });
+    for (const other of cur.members) {
+      if (other.userId !== userId && other.place === null && m.place === 1) void this.push(other.userId, (tx) => tx.push.raceFirst(m.firstName));
+    }
+  }
+
+  // ---------- сезон: пропуск, коллекция, фестиваль ----------
+
+  /** Идущий фестиваль и прогресс игрока в нём; null — фестиваля нет. */
+  async festivalView(userId: number): Promise<FestivalView | null> {
+    const now = this.now();
+    const a = activeFestival(now, (await this.configFor(userId)).festival);
+    if (!a) return null;
+    const levels = a.festival.sourceLevels.map((_, i) => festivalLevelId(a.index, i + 1)).filter((id) => this.festivalLevels.has(id));
+    if (levels.length === 0) return null;
+    const m = (await this.store.getWallet(userId)).meta.festival;
+    // прогресс относится к этому же фестивалю этого года (endsAt совпадает)
+    const done = m && m.id === a.festival.id && m.endsAt === a.endsAt ? m.done : 0;
+    return {
+      festival: a.festival, id: a.festival.id, title: a.festival.title, intro: a.festival.intro, endsAt: a.endsAt, levels, done,
+      stepReward: FESTIVAL_STEP, finalReward: festivalFinal(a.festival),
+    };
+  }
+
+  async seasonView(userId: number) {
+    const now = this.now();
+    const e = (await this.configFor(userId)).economy;
+    const m = (await this.store.getWallet(userId)).meta;
+    const season = seasonOf(now);
+    const pass = m.pass?.season === season.index ? m.pass : { season: season.index, points: 0, free: [], premium: [] };
+    const fest = await this.festivalView(userId);
+    return {
+      pass: {
+        season: season.index, endsAt: season.endsAt, points: pass.points, pointsPerTier: POINTS_PER_TIER,
+        tier: Math.min(PASS_TIERS.length, Math.floor(pass.points / POINTS_PER_TIER)),
+        premium: (m.passUntil ?? 0) > now, passUntil: m.passUntil ?? null, price: e.pass.stars,
+        tiers: PASS_TIERS.map((t, i) => ({ tier: i + 1, free: t.free, premium: t.premium, freeClaimed: pass.free.includes(i + 1), premiumClaimed: pass.premium.includes(i + 1) })),
+      },
+      collection: {
+        sets: CARD_SETS.map((st) => ({ id: st.id, title: st.title, frame: st.frame, cards: st.cards.map((c) => ({ id: c, title: CARD_TITLES[c] ?? c, count: m.cards?.[c] ?? 0 })) })),
+        extra: Object.keys(m.cards ?? {}).filter((c) => !CARD_SETS.some((st) => st.cards.includes(c))).map((c) => ({ id: c, title: CARD_TITLES[c] ?? c, count: m.cards![c]! })),
+        frames: (m.frames ?? []).map((f) => ({ id: f, title: FRAMES[f]?.title ?? f, color: FRAMES[f]?.color ?? 0xffffff })),
+        frame: m.frame ?? null,
+      },
+      festival: fest ? { id: fest.id, title: fest.title, intro: fest.intro, endsAt: fest.endsAt, levels: fest.levels, done: fest.done, stepReward: fest.stepReward, finalReward: fest.finalReward } : null,
+      serverTime: now,
+    };
+  }
+
+  /** Забрать ступень пропуска: бесплатная дорожка — всем, премиум — по подписке. */
+  async claimPass(userId: number, tier: unknown, track: unknown): Promise<MetaClaim> {
+    if (!Number.isInteger(tier) || (tier as number) < 1 || (tier as number) > PASS_TIERS.length || (track !== 'free' && track !== 'premium')) {
+      throw new ServiceError('bad_request', 400);
+    }
+    const t = tier as number;
+    const now = this.now();
+    const season = seasonOf(now).index;
+    const r = await this.claim(userId, (w) => {
+      const pass = w.meta.pass?.season === season ? w.meta.pass : { season, points: 0, free: [], premium: [] };
+      if (Math.floor(pass.points / POINTS_PER_TIER) < t) return new ServiceError('not_done', 409);
+      if (track === 'premium' && (w.meta.passUntil ?? 0) <= now) return new ServiceError('not_available', 409);
+      const list = track === 'free' ? pass.free : pass.premium;
+      if (list.includes(t)) return new ServiceError('already', 409);
+      return {
+        reward: PASS_TIERS[t - 1]![track],
+        meta: { ...w.meta, pass: { ...pass, [track]: [...list, t] } },
+      };
+    });
+    await this.track(userId, 'pass_claim', null, { tier: t, track });
+    return r;
+  }
+
+  /** Выбрать рамку аватара из полученных (null — без рамки). */
+  async setFrame(userId: number, frame: unknown): Promise<{ frame: string | null }> {
+    const w = await this.store.transact(userId, (x) => {
+      if (frame !== null && (typeof frame !== 'string' || !(x.meta.frames ?? []).includes(frame))) return null;
+      const { frame: _, ...rest } = x.meta;
+      return { meta: frame === null ? rest : { ...rest, frame: frame as string } };
+    });
+    if (!w) throw new ServiceError('not_available', 409);
+    return { frame: w.meta.frame ?? null };
+  }
+
   // ---------- магазин ----------
 
   /** Купить бустер за кристаллы (на экране старта уровня или прямо во время игры). */
@@ -1129,24 +1326,29 @@ export class GameService {
     const now = this.now();
     const eff = await this.configFor(userId);
     const e = eff.economy;
+    const inv = textsFor(await this.languageOf(userId)).invoice;
     let stars: number;
     let title: string;
     let description: string;
     if (typeof product === 'string' && product in e.packs) {
       const pack = e.packs[product as keyof Economy['packs']];
       stars = pack.stars;
-      title = pack.title;
-      description = `${pack.crystals} звёздных кристаллов${pack.bonus ? ` (выгода ${pack.bonus}%)` : ''}`;
+      title = inv.packTitles[product as string] ?? pack.title;
+      description = inv.pack(pack.crystals, pack.bonus);
     } else if (product === 'starter') {
       if (w.starterBought || w.starterUntil <= now) throw new ServiceError('not_available', 409);
       stars = e.starter.stars;
-      title = 'Стартовый набор';
-      description = `${e.starter.crystals} кристаллов, 3 бустера и ${e.starter.infiniteLivesMs / 3600_000} ч бесконечных жизней`;
+      title = inv.starterTitle;
+      description = inv.starter(e.starter.crystals, e.starter.infiniteLivesMs / 3600_000);
+    } else if (product === 'pass') {
+      stars = e.pass.stars;
+      title = inv.passTitle;
+      description = inv.pass;
     } else if (product === 'piggy') {
       if (w.piggy < e.piggy.minToBreak) throw new ServiceError('not_available', 409);
       stars = e.piggy.stars;
-      title = 'Копилка кристаллов';
-      description = `Разбить копилку: ${w.piggy} кристаллов`;
+      title = inv.piggyTitle;
+      description = inv.piggy(w.piggy);
     } else {
       throw new ServiceError('bad_request', 400);
     }
@@ -1180,6 +1382,8 @@ export class GameService {
         };
       }
       if (inv.product === 'piggy') return { crystals: w.crystals + w.piggy, piggy: 0 };
+      // подписка: каждое продление (новый charge id) — ещё 30 дней премиума
+      if (inv.product === 'pass') return { meta: { ...w.meta, passUntil: Math.max(now, w.meta.passUntil ?? 0) + 30 * 86_400_000 } };
       return { crystals: w.crystals + e.packs[inv.product as keyof Economy['packs']].crystals };
     });
     if (status === 'ok') await this.track(userId, 'offer_purchased', null, { product: inv.product, stars: amount, chargeId, ...expProps(eff) });
@@ -1209,6 +1413,7 @@ export class GameService {
     const e = paid ? (await this.configFor(paid.userId)).economy : this.economy;
     const r = await this.store.refundPayment(chargeId, now, (w, product, granted) => {
       const crystals = Math.max(0, w.crystals - granted);
+      if (product === 'pass') return { meta: { ...w.meta, passUntil: Math.min(w.meta.passUntil ?? 0, now) } };
       if (product !== 'starter') return { crystals };
       const items = Object.fromEntries((Object.entries(e.starter.items) as [Item, number][]).map(([i, n]) => [i, Math.max(0, w.items[i] - n)]));
       return { crystals, items, lives: { ...w.lives, infiniteUntil: Math.min(w.lives.infiniteUntil, now) } };
@@ -1230,6 +1435,10 @@ export class GameService {
       status, finishedAt: now, score, stars: 0, swaps, lives: user.lives, progress, maxLevel: user.maxLevel,
     });
     if (status === 'lost' && !attempt.roomId && score > 0) await this.bumpTasks(attempt.userId, { score });
+    // серия побед сгорает при поражении на карте (и брошенной партии)
+    if (countsAsLoss && !attempt.roomId) {
+      await this.store.transact(attempt.userId, (w) => (w.meta.streak ? { meta: { ...w.meta, streak: 0 } } : null));
+    }
     // PRD: level_fail — с оставшимися ходами и прогрессом цели
     await this.track(attempt.userId, attempt.roomId ? 'room_fail' : 'level_fail', attempt.levelId, {
       ...(attempt.roomId ? { roomId: attempt.roomId } : {}),
@@ -1252,6 +1461,25 @@ export function roomLevelPool(levels: ReadonlyMap<number, LevelDef>, creatorMaxL
 
 const MAX_LIVES_VIEW = 5;
 
+/** Очки фестивального пропуска; новый сезон начинает с нуля. */
+function addPassPoints(meta: MetaState, now: number, n: number): MetaState {
+  const season = seasonOf(now).index;
+  const pass = meta.pass?.season === season ? meta.pass : { season, points: 0, free: [], premium: [] };
+  return { ...meta, pass: { ...pass, points: pass.points + n } };
+}
+
+export interface FestivalView {
+  readonly festival: (typeof FESTIVALS)[number];
+  readonly id: string;
+  readonly title: string;
+  readonly intro: string;
+  readonly endsAt: number;
+  readonly levels: readonly number[];
+  readonly done: number;
+  readonly stepReward: Reward;
+  readonly finalReward: Reward;
+}
+
 /** Победитель дуэли: первый по порядку; без соперника — только если прошёл уровень. */
 function duelWinner(ordered: readonly RoomResult[]): RoomResult | null {
   const first = ordered[0];
@@ -1266,6 +1494,21 @@ export function piecesCleared(options: GameOptions, moves: readonly Move[]): num
     for (const e of game.apply(m).events) if (e.type === 'cascade') n += e.step.cleared.length;
   }
   return n;
+}
+
+export interface RaceView {
+  readonly race: {
+    readonly id: number; readonly endsAt: number; readonly target: number; readonly ended: boolean;
+    /** Группа ещё набирается (первый час): соперники могут прибавиться. */
+    readonly gathering: boolean;
+    readonly members: readonly { readonly name: string; readonly progress: number; readonly place: number | null; readonly me: boolean }[];
+  } | null;
+  readonly canJoin: boolean;
+  readonly target: number;
+  readonly size: number;
+  readonly hours: number;
+  readonly prizes: readonly number[];
+  readonly serverTime: number;
 }
 
 export interface GateView {

@@ -40,6 +40,8 @@ export interface Experiment {
 
 export interface RemoteConfig extends ConfigLayer {
   readonly experiments?: readonly Experiment[];
+  /** Фестиваль вне календаря: id — включить сейчас (на 7 дней), 'off' — выключить. */
+  readonly festival?: string;
 }
 
 /** Итог для конкретного игрока. */
@@ -49,6 +51,7 @@ export interface Effective {
   readonly assistAfterLosses: number;
   /** id эксперимента → вариант игрока (только активные). */
   readonly variants: Readonly<Record<string, string>>;
+  readonly festival?: string;
 }
 
 export const DEFAULT_ASSIST_AFTER = 5;
@@ -129,8 +132,11 @@ function parseLayer(v: unknown, path: string, levelIds: ReadonlySet<number> | nu
 /** Разобрать и проверить конфиг целиком. levelIds — чтобы не принять сдвиг несуществующего уровня. */
 export function parseRemoteConfig(v: unknown, levelIds: ReadonlySet<number> | null = null): RemoteConfig {
   if (!isObj(v)) throw new ConfigError('конфиг: ожидается объект');
-  keysOnly(v, ['economy', 'levels', 'assistAfterLosses', 'experiments'], 'конфиг');
-  const base = parseLayer(v, '', levelIds);
+  keysOnly(v, ['economy', 'levels', 'assistAfterLosses', 'experiments', 'festival'], 'конфиг');
+  const base: RemoteConfig = {
+    ...parseLayer(v, '', levelIds),
+    ...(v.festival !== undefined ? { festival: festivalKey(v.festival) } : {}),
+  };
   if (v.experiments === undefined) return base;
   if (!Array.isArray(v.experiments) || v.experiments.length > 10) throw new ConfigError('experiments: список до 10 экспериментов');
   const ids = new Set<string>();
@@ -196,7 +202,7 @@ export function resolveConfig(cfg: RemoteConfig, userId: number, base: Economy =
     if (l.levels) levels = { ...levels, ...l.levels };
     if (l.assistAfterLosses !== undefined) assistAfterLosses = l.assistAfterLosses;
   }
-  return { economy, levels, assistAfterLosses, variants };
+  return { economy, levels, assistAfterLosses, variants, ...(cfg.festival ? { festival: cfg.festival } : {}) };
 }
 
 /** Ходы и время уровня после сдвига конфига (null — без изменений). */
@@ -215,4 +221,9 @@ export function levelForAttempt(level: LevelDef, a: { readonly moves: number | n
 /** Порог скрытого облегчения: ядро считает от 5 поражений, конфиг сдвигает порог. */
 export function lossStreakForAssist(lossStreak: number, assistAfterLosses: number): number {
   return lossStreak - (assistAfterLosses - DEFAULT_ASSIST_AFTER);
+}
+
+function festivalKey(v: unknown): string {
+  if (typeof v !== 'string' || !/^(off|hanami|tanabata|halloween|newyear)$/.test(v)) throw new ConfigError('festival: hanami, tanabata, halloween, newyear или off');
+  return v;
 }

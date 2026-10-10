@@ -1,103 +1,50 @@
 import type { Goal } from '@sakura/core';
 
-/** Тексты интерфейса. PRD: локализация EN/ES/PT — на этапе масштабирования, сейчас только RU. */
-export const t = {
-  moves: 'Ходы',
-  time: 'Время',
-  score: 'Очки',
-  level: (n: number) => `Уровень ${n}`,
-  win: 'Победа!',
-  lose: 'Не хватило чуть-чуть',
-  retry: 'Ещё раз',
-  toMap: 'На карту',
-  tapToContinue: 'нажми, чтобы продолжить ▸',
-  room: {
-    teamTitle: 'Командный фонарь',
-    teamSubtitle: (creator: string) => `Весь чат зажигает фонарь · позвал ${creator}`,
-    teamProgress: (n: number, target: number) => `${n.toLocaleString('ru-RU')} / ${target.toLocaleString('ru-RU')} огоньков`,
-    teamReward: (r: string) => `Награда: ${r}`,
-    teamDone: 'Фонарь зажжён! Сундук получили все участники',
-    duelTitle: 'Дуэль',
-    duelSubtitle: (level: number, creator: string) => `Уровень ${level} · вызов от ${creator}`,
-    duelWaiting: 'Ждём соперника — прими вызов!',
-    duelMoves: (n: number) => `${n} ходов`,
-    duelLost: 'не прошёл',
-    duelWinner: (name: string) => `Победил ${name}!`,
-    duelAccept: 'Принять вызов',
-    duelFull: 'В дуэли уже двое — можно посмотреть итог',
-    title: 'Челлендж чата',
-    subtitle: (level: number, creator: string) => `уровень ${level} · зовёт ${creator}`,
-    endsIn: (time: string) => `до конца ${time}`,
-    ended: 'Челлендж завершён',
-    empty: 'Пока никто не сыграл — будь первым!',
-    you: 'ты',
-    players: (n: number) => `Сыграли: ${n}`,
-    playFree: 'Играть — бесплатно',
-    playLife: 'Играть · ♥ 1',
-    toRanking: 'К рейтингу',
-    place: (place: number, players: number) => `Место в чате: ${place} из ${players}`,
-    notFound: 'Комната не найдена — возможно, она закрыта.',
-  },
-  economy: {
-    startBoosters: 'Бустеры перед уровнем',
-    balance: 'Кристаллы',
-    play: 'Играть',
-    shop: 'Магазин',
-    close: 'Закрыть',
-    starterTitle: 'Стартовый набор',
-    starterText: (c: number, hours: number) => `${c} 💎, 3 бустера и ${hours} ч бесконечных жизней`,
-    offerEnds: (time: string) => `Предложение закончится через ${time}`,
-    piggyTitle: 'Копилка кристаллов',
-    piggyText: (n: number, max: number) => `${n} из ${max} 💎 — растёт с каждой победой`,
-    extendTitle: 'Ещё чуть-чуть!',
-    extendText: (left: string) => `Ходы закончились. Осталось: ${left}`,
-    extendBuy: (moves: number, price: number) => `+${moves} ходов · ${price} 💎`,
-    giveUp: 'Сдаться',
-    notEnough: 'Не хватает кристаллов',
-    buyItem: (name: string, price: number) => `${name} · ${price} 💎`,
-    cancel: 'Отмена',
-    pickCell: 'Выбери фишку',
-    pickSwap: 'Поменяй любые соседние фишки',
-    paymentsOnlyTelegram: 'Покупки за Telegram Stars работают, когда игра открыта в Telegram.',
-    paymentFailed: 'Оплата не прошла — попробуй ещё раз',
-    paymentPending: 'Оплата прошла — покупка появится через минуту',
-    refill: (price: number) => `Все жизни · ${price} 💎`,
-  },
-  share: {
-    invite: '💬 В чат',
-    askLife: 'Попросить жизнь в чате',
-    onlyTelegram: 'Позвать друзей можно, когда игра открыта в Telegram.',
-    limit: 'На сегодня хватит карточек: можно 5 в день.',
-    title: 'Позвать друзей',
-    inviteText: 'Играем в Sakura Spark — match-3 прямо в Telegram! Заходи по ссылке, подарю жизнь ❤',
-  },
-  exitTitle: 'Выйти из уровня?',
-  exitText: 'Попытка засчитается как проигрыш — жизнь сгорит.',
-  exitYes: 'Выйти',
-  exitNo: 'Остаться',
-  next: 'Дальше',
-  bonus: (n: number) => `Финальный салют +${n}`,
-  noMoves: 'Перемешиваем…',
-  lives: (n: number, max: number) => `♥ ${n}/${max}`,
-  livesInfinite: '♥ ∞',
-  nextLife: (time: string) => `Следующая жизнь через ${time}`,
-  noLivesTitle: 'Жизни закончились',
-  noLivesText: 'Фонарики-сердечки восстанавливаются сами: одна жизнь каждые 30 минут.',
-  tryAgain: 'Проверить',
-  loading: 'Загрузка…',
-  offline: 'Нет связи с сервером — играем без сохранения',
-} as const;
+import { en } from './i18n/en.ts';
+import { es } from './i18n/es.ts';
+import { pt } from './i18n/pt.ts';
+import { ru } from './i18n/ru.ts';
+import type { Strings } from './i18n/ru.ts';
 
-const COLOR_NAMES = ['звёзды', 'сердца', 'луны', 'лепестки', 'капли', 'листья'] as const;
+export type { Strings };
+export type Lang = 'ru' | 'en' | 'es' | 'pt';
+const DICTS: Readonly<Record<Lang, Strings>> = { ru, en, es, pt };
+
+/**
+ * Тексты интерфейса на языке игрока (PRD: RU, EN, ES, PT). Живая привязка ES-модуля:
+ * setLanguage при запуске меняет t для всех, кто его импортировал.
+ */
+export let t: Strings = ru;
+export let lang: Lang = 'ru';
+
+/** Язык по коду Telegram (language_code): русский для RU/UA/BY/KZ, испанский, португальский, иначе английский. */
+export function languageFor(code: string | null | undefined): Lang {
+  if (!code) return 'ru';
+  const c = code.toLowerCase().slice(0, 2);
+  if (['ru', 'uk', 'be', 'kk'].includes(c)) return 'ru';
+  if (c === 'es') return 'es';
+  if (c === 'pt') return 'pt';
+  return 'en';
+}
+
+export function setLanguage(l: Lang): void {
+  lang = l;
+  t = DICTS[l];
+}
+
+/** Текст из уровня (реплика, обучение) на языке игрока: перевод из i18n, иначе русский оригинал. */
+export function localized(line: { readonly text: string; readonly i18n?: Readonly<Partial<Record<'en' | 'es' | 'pt', string>>> }): string {
+  return lang === 'ru' ? line.text : line.i18n?.[lang] ?? line.text;
+}
 
 /** Короткая подпись цели для HUD. */
 export function goalLabel(goal: Goal): string {
   switch (goal.type) {
-    case 'score': return 'Очки';
-    case 'jelly': return 'Желе';
-    case 'lanterns': return 'Фонарики';
-    case 'collect': return COLOR_NAMES[goal.color] ?? 'Фишки';
-    case 'fog': return 'Туман';
+    case 'score': return t.goals.score;
+    case 'jelly': return t.goals.jelly;
+    case 'lanterns': return t.goals.lanterns;
+    case 'collect': return t.colors[goal.color] ?? t.goals.pieces;
+    case 'fog': return t.goals.fog;
   }
 }
 

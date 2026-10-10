@@ -33,6 +33,14 @@ export interface MapData {
   readonly friends?: readonly { readonly id: number; readonly name: string; readonly maxLevel: number }[];
   readonly onFriends?: (() => void) | null;
   readonly friendsBadge?: boolean;
+  readonly onRace?: (() => void) | null;
+  readonly raceBadge?: boolean;
+  readonly onSeason?: (() => void) | null;
+  readonly seasonBadge?: boolean;
+  readonly onFestival?: (() => void) | null;
+  readonly festivalBadge?: boolean;
+  /** Цвет рамки аватара (коллекция); null — без рамки. */
+  readonly frameColor?: number | null;
 }
 
 const FONT = 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
@@ -50,6 +58,9 @@ export class MapScene extends Phaser.Scene {
   dailyButton: { x: number; y: number } | null = null;
   wheelButton: { x: number; y: number } | null = null;
   friendsButton: { x: number; y: number } | null = null;
+  raceButton: { x: number; y: number } | null = null;
+  seasonButton: { x: number; y: number } | null = null;
+  festivalButton: { x: number; y: number } | null = null;
   /** Нажатие по кнопке поверх карты — чтобы тап не попал в узел уровня под ней. */
   private shareTapped = false;
 
@@ -136,8 +147,8 @@ export class MapScene extends Phaser.Scene {
     const ring = this.add.circle(c.x, c.y, r, 0xffffff, 0).setStrokeStyle(4 * k, hexToInt(theme.button), 0.9);
     this.tweens.add({ targets: ring, scale: 1.35, alpha: 0, duration: 1100, repeat: -1 });
     const mika = this.add.container(c.x, c.y - r - 30 * k, [
-      this.add.circle(0, 0, 20 * k, 0xff9ec7).setStrokeStyle(3 * k, 0xffffff),
-      this.add.text(0, 0, 'М', { fontFamily: FONT, fontSize: `${Math.round(18 * k)}px`, fontStyle: 'bold', color: '#ffffff' }).setOrigin(0.5),
+      this.add.circle(0, 0, 20 * k, 0xff9ec7).setStrokeStyle(data.frameColor ? 5 * k : 3 * k, data.frameColor ?? 0xffffff),
+      this.add.text(0, 0, t.mikaInitial, { fontFamily: FONT, fontSize: `${Math.round(18 * k)}px`, fontStyle: 'bold', color: '#ffffff' }).setOrigin(0.5),
     ]);
     this.tweens.add({ targets: mika, y: mika.y - 6 * k, yoyo: true, repeat: -1, duration: 700, ease: 'Sine.easeInOut' });
 
@@ -197,6 +208,9 @@ export class MapScene extends Phaser.Scene {
     this.dailyButton = data.onDaily ? round('🎁', barY + 84 * k, data.dailyBadge === true, data.onDaily) : null;
     this.wheelButton = data.onWheel ? round('🎡', barY + 142 * k, data.wheelBadge === true, data.onWheel) : null;
     this.friendsButton = data.onFriends ? round('👥', barY + 200 * k, data.friendsBadge === true, data.onFriends) : null;
+    this.raceButton = data.onRace ? round('🏁', barY + 258 * k, data.raceBadge === true, data.onRace) : null;
+    this.seasonButton = data.onSeason ? round('🎫', barY + 316 * k, data.seasonBadge === true, data.onSeason) : null;
+    this.festivalButton = data.onFestival ? round('🏮', barY + 374 * k, data.festivalBadge === true, data.onFestival) : null;
 
     // друзья на своих уровнях: до трёх кружков у узла, сбоку от тропы
     const byLevel = new Map<number, { id: number; name: string }[]>();

@@ -9,6 +9,7 @@ import { createApp } from '../src/http.ts';
 import { LIFE_REGEN_MS } from '../src/lives.ts';
 import { GameService, MIN_MS_PER_MOVE, ServiceError } from '../src/service.ts';
 import { SqliteStore } from '../src/store.ts';
+import { NO_STREAK } from './helpers.ts';
 
 const base = { width: 6, height: 6, colors: 5, difficulty: 'normal', stars: [1, 2, 3] };
 const LEVELS = new Map<number, LevelDef>([...Array(35).keys()].map((i) => [i + 1, parseLevel({ ...base, id: i + 1, moves: 10, goals: [{ type: 'score', target: 1 }] })]));
@@ -34,7 +35,7 @@ beforeEach(async () => {
   clock = Date.UTC(2026, 9, 10, 9, 0, 0);
   store = new SqliteStore(':memory:');
   let seq = 0;
-  service = new GameService({
+  service = new GameService({ economy: NO_STREAK,
     store, levels: LEVELS, now: () => clock, newSeed: () => 1000 + seq, newId: () => `att-${++seq}`,
     sendPush: async (to, text) => {
       pushes.push({ to, text });
@@ -138,14 +139,14 @@ test('pushes: at most 2 a day, not when notifications are off or the bot is not 
   await player(1);
   await player(2);
   await service.befriend(1, 2, 'test');
-  for (let i = 0; i < 4; i++) await service.push(2, `hi ${i}`);
+  for (let i = 0; i < 4; i++) await service.push(2, () => `hi ${i}`);
   assert.deepEqual(pushes.map((p) => p.text), ['hi 0', 'hi 1']);
   clock += 24 * HOUR;
   await service.setNotify(2, false);
-  assert.equal(await service.push(2, 'off'), false);
+  assert.equal(await service.push(2, () => 'off'), false);
   await service.setNotify(2, true);
   await service.login({ id: 2, firstName: 'P2', allowsPm: false });
-  assert.equal(await service.push(2, 'no pm'), false);
+  assert.equal(await service.push(2, () => 'no pm'), false);
   assert.equal(pushes.length, 2);
 });
 

@@ -101,6 +101,27 @@ export class Board {
     return paths;
   }
 
+  /**
+   * Клетки, где новые фишки появляются «из ниоткуда» посреди поля: начало пути падения, прямо над которым
+   * игровая клетка (вход портала уводит фишки в другое место, а сверху сюда ничего не падает).
+   * Для линта уровней: такая клетка выглядит как баг — фишки возникают под портальным входом.
+   */
+  orphanSpawns(): { cell: Pos; above: Pos }[] {
+    const hasPred = new Set<string>();
+    for (const p of this.playableCells()) {
+      const b = this.below(p);
+      if (b) hasPred.add(key(b));
+    }
+    const out: { cell: Pos; above: Pos }[] = [];
+    for (const start of this.playableCells()) {
+      if (hasPred.has(key(start)) || start.row === 0) continue;
+      // дыра прямо над клеткой — видимый «край» поля, появление фишек оттуда выглядит естественно
+      const above = { row: start.row - 1, col: start.col };
+      if (!this.isHole(above)) out.push({ cell: start, above });
+    }
+    return out;
+  }
+
   /** Низ поля для фонариков: путь падения заканчивается в самой нижней клетке столбца. */
   lanternExits(): Pos[] {
     const exits: Pos[] = [];

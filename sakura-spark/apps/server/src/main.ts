@@ -17,7 +17,7 @@ let chat: ChatBot | null = null;
 const log = (m: string) => console.error(m);
 const service = new GameService({
   store, levels, onRoomChanged: (id) => chat?.scheduleRefresh(id), log,
-  sendPush: (userId, text) => (chat ? chat.push(userId, text) : Promise.resolve(false)),
+  sendPush: (userId, text, tx) => (chat ? chat.push(userId, text, tx) : Promise.resolve(false)),
 });
 // раз в 5 минут: пуши «жизни восстановились»
 // и итоги истёкших комнат чата (награды челленджа, дуэли)

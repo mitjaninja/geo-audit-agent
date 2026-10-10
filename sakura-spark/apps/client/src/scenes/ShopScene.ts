@@ -78,7 +78,7 @@ export class ShopScene extends Phaser.Scene {
 
     for (const p of packs) {
       this.add.image(x + 40 * k, y, 'crystal').setDisplaySize(34 * k, 34 * k);
-      this.ui.text(x + 66 * k, y - 9 * k, p.title, 15, { bold: true, originX: 0 });
+      this.ui.text(x + 66 * k, y - 9 * k, t.economy.packs[p.id] ?? p.title, 15, { bold: true, originX: 0 });
       this.ui.text(x + 66 * k, y + 12 * k, `${crystals(p.crystals)}${p.bonus ? `  ·  +${p.bonus}%` : ''}`, 13, { color: theme.hint, originX: 0 });
       this.ui.button(`${p.stars} ⭐`, x + pw - 70 * k, y, 100 * k, 'primary', () => void this.buy(p.id), 40);
       y += 58 * k;

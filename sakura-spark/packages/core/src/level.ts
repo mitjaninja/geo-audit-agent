@@ -13,15 +13,20 @@ export type Speaker = 'mika' | 'pon' | 'ren' | 'setsu';
 const SPEAKERS: readonly string[] = ['mika', 'pon', 'ren', 'setsu'];
 
 /** Реплика перед уровнем: знакомит с новой механикой. Коротко — PRD: «без длинных диалогов». */
+/** Переводы реплики (PRD: EN/ES/PT); основной текст — русский, в text. */
+export type Translations = Readonly<Partial<Record<'en' | 'es' | 'pt', string>>>;
+
 export interface IntroLine {
   readonly speaker: Speaker;
   readonly text: string;
+  readonly i18n?: Translations;
 }
 
 /** Обучающий первый ход: рука показывает этот свап, остальные ходы до него недоступны. Нужен layout. */
 export interface Tutorial {
   readonly swap: Swap;
   readonly text: string;
+  readonly i18n?: Translations;
 }
 
 /**
@@ -94,24 +99,26 @@ export function parseLevel(input: unknown): LevelDef {
   if (intro !== undefined) {
     if (!Array.isArray(intro) || intro.length < 1 || intro.length > 4
       || !intro.every((l) => isObj(l) && SPEAKERS.includes(String(l.speaker)) && typeof l.text === 'string'
-        && l.text.length >= 1 && l.text.length <= 160)) {
-      errors.push(`intro: 1..4 lines of { speaker: ${SPEAKERS.join('|')}, text: 1..160 chars }`);
+        && l.text.length >= 1 && l.text.length <= 160 && validTranslations(l.i18n))) {
+      errors.push(`intro: 1..4 lines of { speaker: ${SPEAKERS.join('|')}, text: 1..160 chars, i18n?: { en|es|pt: text } }`);
     } else {
-      introLines = intro.map((l: { speaker: Speaker; text: string }) => ({ speaker: l.speaker, text: l.text }));
+      introLines = intro.map((l: { speaker: Speaker; text: string; i18n?: Translations }) => ({
+        speaker: l.speaker, text: l.text, ...(l.i18n ? { i18n: l.i18n } : {}),
+      }));
     }
   }
   let tutorialDef: Tutorial | undefined;
   if (tutorial !== undefined) {
     const cell = (v: unknown): v is [number, number] => Array.isArray(v) && v.length === 2 && v.every((n) => Number.isInteger(n));
-    const t = tutorial as { swap?: unknown; text?: unknown };
+    const t = tutorial as { swap?: unknown; text?: unknown; i18n?: unknown };
     if (!isObj(tutorial) || !Array.isArray(t.swap) || t.swap.length !== 2 || !t.swap.every(cell)
-      || typeof t.text !== 'string' || t.text.length < 1 || t.text.length > 160) {
+      || typeof t.text !== 'string' || t.text.length < 1 || t.text.length > 160 || !validTranslations(t.i18n)) {
       errors.push('tutorial: { swap: [[row, col], [row, col]], text: 1..160 chars }');
     } else if (layout === undefined) {
       errors.push('tutorial needs a fixed layout');
     } else {
       const [[ar, ac], [br, bc]] = t.swap as [[number, number], [number, number]];
-      tutorialDef = { swap: { a: { row: ar, col: ac }, b: { row: br, col: bc } }, text: t.text };
+      tutorialDef = { swap: { a: { row: ar, col: ac }, b: { row: br, col: bc } }, text: t.text, ...(t.i18n ? { i18n: t.i18n as Translations } : {}) };
     }
   }
   if (typeof difficulty !== 'string' || !DIFFICULTIES.includes(difficulty)) errors.push(`difficulty: one of ${DIFFICULTIES.join(', ')}`);
@@ -256,4 +263,21 @@ export function gameOptionsFromLevel(level: LevelDef, seed: number): GameOptions
     ...(level.lanterns ? { lanterns: level.lanterns } : {}),
     ...(level.timeLimit !== undefined ? { timeLimit: level.timeLimit } : {}),
   };
+}
+
+/**
+ * Предупреждения дизайнеру (уровень валиден, но выглядит как ошибка). Сейчас — клетки, куда фишки
+ * приходят «из ниоткуда»: под входом портала нет дыры, а сверху в них ничего не падает.
+ */
+export function lintLevel(level: LevelDef): string[] {
+  const board = new Match3Game(gameOptionsFromLevel(level, 1)).board;
+  return board.orphanSpawns().map(({ cell, above }) =>
+    `cell ${cell.row},${cell.col}: pieces appear out of nowhere — the cell above (${above.row},${above.col}) sends them through a portal; `
+    + 'put a hole under the portal entry or move the portal');
+}
+
+function validTranslations(v: unknown): boolean {
+  if (v === undefined) return true;
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return false;
+  return Object.entries(v).every(([k, x]) => ['en', 'es', 'pt'].includes(k) && typeof x === 'string' && x.length >= 1 && x.length <= 200);
 }

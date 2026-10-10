@@ -22,7 +22,12 @@ export interface StartData {
   readonly onBuy: (item: Item) => Promise<WalletView | null>;
   /** Рейтинг уровня среди друзей (PRD); null — офлайн или комната. */
   readonly loadFriends?: (() => Promise<readonly LevelFriend[]>) | null;
+  /** Серия побед (PRD «Серия побед»): бустеры, которые она даёт бесплатно. */
+  readonly streak?: number;
 }
+
+/** Как на сервере (meta.streakBoosters): 1 — луч и бомба, 2 — и радужный, 3+ — и +3 хода. */
+export const streakItems = (streak: number): Item[] => START_ITEMS.slice(0, Math.min(3, Math.max(0, streak)));
 
 /** Экран старта уровня (PRD: бустеры перед уровнем): цели и три бустера на выбор. */
 export class StartScene extends Phaser.Scene {
@@ -33,6 +38,7 @@ export class StartScene extends Phaser.Scene {
   /** Переключатели бустеров в пикселях canvas — для e2e. */
   toggles: { item: Item; x: number; y: number }[] = [];
   private toggleViews = new Map<Item, { ring: Phaser.GameObjects.Arc; badge: Phaser.GameObjects.Text }>();
+  private free = new Set<Item>();
 
   constructor() {
     super('start');
@@ -59,7 +65,7 @@ export class StartScene extends Phaser.Scene {
     const y = Math.max(telegram.insets().top * k + 16 * k, (H - ph) / 2);
     this.ui.panel(x, y, pw, ph);
     this.ui.text(W / 2, y + 40 * k, data.title, 24, { bold: true });
-    this.ui.text(W / 2, y + 70 * k, level.timeLimit ? `${t.time}: ${level.timeLimit} с` : `${t.moves}: ${level.moves}`, 15, { color: theme.hint });
+    this.ui.text(W / 2, y + 70 * k, level.timeLimit ? `${t.time}: ${t.seconds(level.timeLimit)}` : `${t.moves}: ${level.moves}`, 15, { color: theme.hint });
 
     // цели
     const n = level.goals.length;
@@ -72,7 +78,9 @@ export class StartScene extends Phaser.Scene {
     });
 
     // бустеры перед уровнем
-    this.ui.text(W / 2, y + 205 * k, t.economy.startBoosters, 15, { bold: true });
+    const free = streakItems(data.streak ?? 0);
+    this.free = new Set(free);
+    this.ui.text(W / 2, y + 205 * k, free.length > 0 ? t.economy.streak(data.streak ?? 0, free.length) : t.economy.startBoosters, 15, { bold: true, color: free.length > 0 ? '#ff7a1a' : theme.text });
     START_ITEMS.forEach((item, i) => {
       const cx = W / 2 + (i - 1) * 104 * k;
       const cy = y + 262 * k;
@@ -91,7 +99,7 @@ export class StartScene extends Phaser.Scene {
     const friendsLine = this.ui.text(W / 2, y + 374 * k, '', 13, { color: theme.text, wrap: pw - 40 * k, align: 'center' });
     data.loadFriends?.().then((top) => {
       if (!this.scene.isActive() || top.length === 0) return;
-      const fmt = (r: LevelFriend) => `${r.place}. ${r.me ? 'Ты' : r.name} ${r.score.toLocaleString('ru-RU')}`;
+      const fmt = (r: LevelFriend) => `${r.place}. ${r.me ? t.you : r.name} ${r.score.toLocaleString(t.locale)}`;
       const mine = top.find((r) => r.me);
       const shown = top.slice(0, 3);
       if (mine && !shown.includes(mine)) shown.push(mine);
@@ -106,14 +114,16 @@ export class StartScene extends Phaser.Scene {
     for (const item of START_ITEMS) {
       const v = this.toggleViews.get(item)!;
       const count = this.wallet.items[item];
-      v.ring.setVisible(this.selected.has(item));
-      v.badge.setText(count > 0 ? String(count) : `+ ${crystals(this.data_.shop.itemPrices[item])}`);
+      const free = this.free.has(item);
+      v.ring.setVisible(free || this.selected.has(item)).setStrokeStyle(5 * this.data_.dpr, free ? 0xff7a1a : hexToInt(this.data_.theme.button), 1);
+      v.badge.setText(free ? '🔥' : count > 0 ? String(count) : `+ ${crystals(this.data_.shop.itemPrices[item])}`);
     }
     const balance = this.children.getByName('balance') as Phaser.GameObjects.Text | null;
     balance?.setText(`${t.economy.balance}: ${crystals(this.wallet.crystals)}`);
   }
 
   private async toggle(item: Item): Promise<void> {
+    if (this.free.has(item)) return; // уже бесплатно по серии
     if (this.selected.has(item)) {
       this.selected.delete(item);
     } else if (this.wallet.items[item] > 0) {
