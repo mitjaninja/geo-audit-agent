@@ -1,7 +1,8 @@
 import Phaser from 'phaser';
+import { svgTextures, VIEW } from './svgArt.ts';
 
 /**
- * Временная графика: всё рисуется кодом в текстуры при загрузке, файлов арта нет.
+ * Запасная графика: рисуется кодом в текстуры при загрузке; поверх неё loadSvgTextures кладёт векторный арт.
  * Ключи текстур — контракт для сцены; когда появится арт, достаточно загрузить
  * картинки под теми же ключами.
  */
@@ -292,4 +293,26 @@ export function makeTextures(scene: Phaser.Scene): void {
     g.fillStyle(0xfff3b0, 1);
     g.fillRect(0, C - 10, TEX, 20);
   });
+}
+
+/** Размер растра векторных текстур: крупнее TEX, чтобы на экранах с dpr 3 фишки были чёткими. */
+const SVG_TEX = 160;
+
+/**
+ * Векторная графика (svgArt.ts) поверх запасных текстур: каждую SVG растеризуем
+ * и подменяем текстуру с тем же ключом. Если картинка не загрузилась — остаётся запасная.
+ */
+export async function loadSvgTextures(scene: Phaser.Scene): Promise<void> {
+  const all = svgTextures();
+  await Promise.all(Object.entries(all).map(([key, src]) => new Promise<void>((resolve) => {
+    const img = new Image(SVG_TEX, SVG_TEX);
+    const sized = src.replace(`width="${VIEW}" height="${VIEW}"`, `width="${SVG_TEX}" height="${SVG_TEX}"`);
+    img.onload = () => {
+      if (scene.textures.exists(key)) scene.textures.remove(key);
+      scene.textures.addImage(key, img);
+      resolve();
+    };
+    img.onerror = () => resolve();
+    img.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(sized)}`;
+  })));
 }

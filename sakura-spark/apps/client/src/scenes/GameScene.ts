@@ -2,11 +2,13 @@ import Phaser from 'phaser';
 import { gameOptionsFromLevel, Match3Game } from '@sakura/core';
 import type { CascadeStep, GameEvent, GameOptions, IntroLine, LevelDef, Move, Pos, Swap } from '@sakura/core';
 import type { ClientEvent, Item, LivesView, ShopView, WalletView } from '../api.ts';
+import { charKey, DISTRICT_ART, districtKey } from '../art.ts';
 import { GAME_ITEMS, ITEM_INFO, nextExtendPrice } from '../economy.ts';
 import { formatTime, goalLabel, localized, t } from '../i18n.ts';
 import { swipeToSwap, tap } from '../input.ts';
 import { cellAt, cellCenter, computeLayout } from '../layout.ts';
 import type { Layout } from '../layout.ts';
+import { episodeOf } from '../map.ts';
 import { telegram } from '../telegram.ts';
 import { HINT_DELAY_MS, pickHint, sameSwap, SPEAKERS } from '../tutorial.ts';
 import type { SeenStore } from '../tutorial.ts';
@@ -117,6 +119,7 @@ export class GameScene extends Phaser.Scene {
   /** Панель бустеров под полем; координаты — для e2e. */
   bar: { item: Item; x: number; y: number; ring: Phaser.GameObjects.Arc; badge: Phaser.GameObjects.Text; icon: Phaser.GameObjects.Image; zone: Phaser.GameObjects.Zone }[] = [];
   private dialogOpen = false;
+  private background: Phaser.GameObjects.Image | null = null;
 
   constructor() {
     super('game');
@@ -146,6 +149,7 @@ export class GameScene extends Phaser.Scene {
     this.hintTweens = [];
     this.onboarding = false;
     this.cameras.main.setBackgroundColor(data.theme.bg);
+    this.background = this.makeBackground();
 
     const board = this.match.board;
     for (const p of board.playableCells()) {
@@ -250,9 +254,13 @@ export class GameScene extends Phaser.Scene {
     const panel = this.add.graphics().fillStyle(hexToInt(theme.panel), 0.97).fillRoundedRect(x, y, w, h, 20 * k)
       .lineStyle(3 * k, speaker.color, 1).strokeRoundedRect(x, y, w, h, 20 * k);
     const avatar = this.add.circle(x + 44 * k, y + h / 2, 30 * k, speaker.color).setStrokeStyle(3 * k, 0xffffff);
-    const initial = this.add.text(x + 44 * k, y + h / 2, speaker.name[0]!, {
-      fontFamily: FONT, fontSize: `${Math.round(24 * k)}px`, fontStyle: 'bold', color: '#ffffff',
-    }).setOrigin(0.5);
+    const portrait = charKey(line.speaker);
+    // портрет героя выглядывает над пузырём; без арта — буква на цветном кружке
+    const initial = this.textures.exists(portrait)
+      ? this.add.image(x + 44 * k, y + h / 2 - 10 * k, portrait).setDisplaySize(88 * k, 88 * k)
+      : this.add.text(x + 44 * k, y + h / 2, speaker.name[0]!, {
+        fontFamily: FONT, fontSize: `${Math.round(24 * k)}px`, fontStyle: 'bold', color: '#ffffff',
+      }).setOrigin(0.5);
     const name = this.add.text(x + 86 * k, y + 14 * k, speaker.name, {
       fontFamily: FONT, fontSize: `${Math.round(13 * k)}px`, fontStyle: 'bold', color: theme.hint,
     });
@@ -347,6 +355,28 @@ export class GameScene extends Phaser.Scene {
     this.hud.update(this.match, this.timeLeft);
     this.syncFromCore(false);
     this.placeBar();
+    this.fitBackground();
+  }
+
+  /** Фон района уровня под полем, приглушённый, чтобы фишки читались. */
+  private makeBackground(): Phaser.GameObjects.Image | null {
+    const id = this.data_.level.id;
+    // фестивальные уровни (id ≥ 1000) — на площади фестиваля
+    const texture = districtKey(id >= 1000 ? DISTRICT_ART : episodeOf(id));
+    if (!this.textures.exists(texture)) return null;
+    const img = this.add.image(0, 0, texture).setDepth(-1).setAlpha(this.data_.theme.isDark ? 0.3 : 0.42);
+    this.background = img;
+    this.fitBackground();
+    return img;
+  }
+
+  private fitBackground(): void {
+    const img = this.background;
+    if (!img) return;
+    const W = this.scale.width;
+    const H = this.scale.height;
+    const scale = Math.max(W / img.width, H / img.height);
+    img.setPosition(W / 2, H / 2).setScale(scale);
   }
 
   private at(p: Pos): { x: number; y: number } {
@@ -946,6 +976,11 @@ export class GameScene extends Phaser.Scene {
       : `${t.lives(lives.lives, lives.max)}${!won && lives.nextLifeAt ? ` · ${t.nextLife(formatTime((lives.nextLifeAt - Date.now()) / 1000))}` : ''}`;
     const finish = this.data_.onFinish;
     let stars: Phaser.GameObjects.Image[] = [];
+    // Мика радуется победе или подбадривает после проигрыша — над окном результата
+    const mood = charKey(won ? 'mika_win' : 'mika_lose');
+    const portrait = (y: number): Phaser.GameObjects.GameObject[] => this.textures.exists(mood)
+      ? [this.add.image(W / 2, y - 46 * k, mood).setDisplaySize(120 * k, 120 * k)]
+      : [];
     if (result.room) {
       this.dialog({
         title: t.room.place(result.room.place, result.room.players),
@@ -953,7 +988,7 @@ export class GameScene extends Phaser.Scene {
         body: (y) => {
           stars = [0, 1, 2].map((i) => this.add.image(W / 2 + (i - 1) * 70 * k, y + 100 * k - (i === 1 ? 10 * k : 0), 'star')
             .setDisplaySize(62 * k, 62 * k).setTint(i < result.stars ? 0xffc93c : 0xd9d2e3));
-          return [...stars, this.add.text(W / 2, y + 150 * k, `${t.score}: ${result.score}${livesLine ? `\n${livesLine}` : ''}`, {
+          return [...portrait(y), ...stars, this.add.text(W / 2, y + 150 * k, `${t.score}: ${result.score}${livesLine ? `\n${livesLine}` : ''}`, {
             fontFamily: FONT, fontSize: `${Math.round(16 * k)}px`, color: theme.hint, align: 'center',
           }).setOrigin(0.5)];
         },
@@ -974,7 +1009,7 @@ export class GameScene extends Phaser.Scene {
         const score = this.add.text(W / 2, y + 150 * k, `${t.score}: ${result.score}${livesLine ? `\n${livesLine}` : ''}`, {
           fontFamily: FONT, fontSize: `${Math.round(16 * k)}px`, color: theme.hint, align: 'center',
         }).setOrigin(0.5);
-        return [...stars, score];
+        return [...portrait(y), ...stars, score];
       },
       buttons: won
         ? [{ label: t.next, primary: true, onClick: () => finish('next') },

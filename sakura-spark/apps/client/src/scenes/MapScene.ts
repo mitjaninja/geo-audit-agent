@@ -1,5 +1,6 @@
 import Phaser from 'phaser';
 import type { LivesView } from '../api.ts';
+import { districtKey } from '../art.ts';
 import { formatTime, t } from '../i18n.ts';
 import { episodeLit, episodes, LEVELS_PER_EPISODE, mapGeometry, nodeState, starsInEpisode } from '../map.ts';
 import type { MapGeometry } from '../map.ts';
@@ -68,6 +69,23 @@ export class MapScene extends Phaser.Scene {
     super('map');
   }
 
+  /**
+   * Арт района в полосе: картинка «cover», обрезанная по полосе. Пройденный район — ярко,
+   * впереди — приглушённо и в серой дымке, как район, который ещё не зажёгся.
+   */
+  private districtArt(episode: number, x: number, y: number, w: number, h: number, lit: boolean): void {
+    const texture = districtKey(episode);
+    if (!this.textures.exists(texture)) return;
+    const img = this.add.image(x + w / 2, y + h / 2, texture);
+    const scale = Math.max(w / img.width, h / img.height);
+    img.setScale(scale);
+    const cw = w / scale;
+    const ch = h / scale;
+    img.setCrop((img.width - cw) / 2, (img.height - ch) / 2, cw, ch);
+    if (lit) img.setAlpha(this.data_.theme.isDark ? 0.75 : 0.9);
+    else img.setAlpha(this.data_.theme.isDark ? 0.3 : 0.45).setTint(0xb8b0c8);
+  }
+
   create(data: MapData): void {
     this.data_ = data;
     this.shareButton = null;
@@ -89,6 +107,9 @@ export class MapScene extends Phaser.Scene {
       this.add.graphics()
         .fillStyle(e.tint, lit ? 0.55 : theme.isDark ? 0.12 : 0.25)
         .fillRoundedRect(10 * k, band.top, W - 20 * k, band.bottom - band.top, 28 * k);
+      this.districtArt(e.id, 10 * k, band.top, W - 20 * k, band.bottom - band.top, lit);
+      // подложка под названием — читается поверх арта
+      this.add.graphics().fillStyle(hexToInt(theme.panel), 0.82).fillRoundedRect(W / 2 - 110 * k, band.top + 8 * k, 220 * k, 54 * k, 18 * k);
       const total = (e.to - e.from + 1) * 3;
       this.add.text(W / 2, band.top + 26 * k, e.name, {
         fontFamily: FONT, fontSize: `${Math.round(20 * k)}px`, fontStyle: 'bold', color: theme.text,

@@ -7,6 +7,7 @@ import { hexToInt } from '../theme.ts';
 import type { Theme } from '../theme.ts';
 import { t } from '../i18n.ts';
 import { Ui } from '../ui.ts';
+import { charKey } from '../art.ts';
 
 export type MetaClaimRequest =
   | { readonly kind: 'login' }
@@ -61,6 +62,8 @@ export class DailyScene extends Phaser.Scene {
     let y = top + 36 * k;
 
     this.ui.text(W / 2, y, t.daily.title, 24, { bold: true });
+    // Пон раздаёт ежедневные награды (PRD, персонажи)
+    if (this.textures.exists(charKey('pon'))) this.add.image(x + 40 * k, y, charKey('pon')).setDisplaySize(60 * k, 60 * k);
     y += 30 * k;
     if (data.notice) {
       this.ui.text(W / 2, y, data.notice, 14, { bold: true, color: theme.button, wrap: pw - 48 * k, align: 'center' });

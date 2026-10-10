@@ -1,6 +1,7 @@
 import Phaser from 'phaser';
 import type { Reward, SeasonView } from '../api.ts';
 import { formatTime, t } from '../i18n.ts';
+import { cardKey } from '../art.ts';
 import { cardTitle, rewardText } from '../meta.ts';
 import { telegram } from '../telegram.ts';
 import { hexToInt } from '../theme.ts';
@@ -153,7 +154,16 @@ export class SeasonScene extends Phaser.Scene {
       set.cards.forEach((card, i) => {
         const cx = x + 24 * k + i * (cw + 6 * k);
         this.add.graphics().fillStyle(card.count > 0 ? 0xffd6e8 : hexToInt(theme.hint), card.count > 0 ? 1 : 0.15).fillRoundedRect(cx, y, cw, cw * 1.35, 8 * k);
-        this.ui.text(cx + cw / 2, y + cw * 0.67, card.count > 0 ? '🎴' : '?', 18, { color: theme.hint });
+        const art = cardKey(card.id);
+        if (art && this.textures.exists(art)) {
+          // арт карточки «cover» в рамке; не собранная — тёмный силуэт-интрига
+          const img = this.add.image(cx + cw / 2, y + cw * 0.675, art);
+          const ch = cw * 1.35 - 6 * k;
+          const scale = Math.max((cw - 6 * k) / img.width, ch / img.height);
+          img.setScale(scale).setCrop((img.width - (cw - 6 * k) / scale) / 2, (img.height - ch / scale) / 2, (cw - 6 * k) / scale, ch / scale);
+          if (card.count === 0) img.setTint(0x3a2a4a).setAlpha(0.35);
+        }
+        if (card.count === 0) this.ui.text(cx + cw / 2, y + cw * 0.67, '?', 18, { color: theme.hint });
         if (card.count > 1) this.ui.text(cx + cw - 6 * k, y + 10 * k, `×${card.count}`, 9, { bold: true, color: '#3a2a4a' });
       });
       y += cw * 1.35 + 10 * k;

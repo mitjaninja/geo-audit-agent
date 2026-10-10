@@ -5,6 +5,7 @@ import { formatTime, t } from '../i18n.ts';
 import { telegram } from '../telegram.ts';
 import type { Theme } from '../theme.ts';
 import { Ui } from '../ui.ts';
+import { charKey } from '../art.ts';
 
 export interface ShopData {
   readonly theme: Theme;
@@ -56,6 +57,8 @@ export class ShopScene extends Phaser.Scene {
     this.ui.panel(x, y, pw, ph);
     y += 36 * k;
     this.ui.text(W / 2, y, t.economy.shop, 24, { bold: true });
+    // Рэн — мастер фонарей, ведёт магазин (PRD, персонажи)
+    if (this.textures.exists(charKey('ren'))) this.add.image(x + 40 * k, y, charKey('ren')).setDisplaySize(60 * k, 60 * k);
     y += 30 * k;
     this.ui.text(W / 2, y, `${t.economy.balance}: ${crystals(wallet.crystals)}`, 15, { color: theme.hint });
     y += 44 * k;
