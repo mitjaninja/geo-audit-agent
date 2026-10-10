@@ -36,6 +36,8 @@ export const es: Strings = {
   noLivesText: 'Los farolillos-corazón se recargan solos: una vida cada 30 minutos.',
   tryAgain: 'Comprobar',
   loading: 'Cargando…',
+  startFailed: 'El nivel no se inició',
+  startTimeout: 'El servidor no respondió en 15 segundos. Revisa tu conexión e inténtalo de nuevo.',
   offline: 'Sin conexión — jugamos sin guardar',
   you: 'Tú',
   mikaInitial: 'M',

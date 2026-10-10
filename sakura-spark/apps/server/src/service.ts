@@ -25,7 +25,7 @@ import type { ChestTier, MetaState, Reward, TaskKind, TaskState } from './meta.t
 export const CLIENT_EVENTS: ReadonlySet<string> = new Set([
   'session_start', 'session_end', 'hint_shown', 'tutorial_complete',
   // PRD: конверсия окна «+5 ходов» по уровням — показы считает клиент, покупки — сервер
-  'moves_offer_shown', 'shop_opened',
+  'moves_offer_shown', 'shop_opened', 'client_error',
 ]);
 const MAX_CLIENT_EVENTS = 20;
 const MAX_PROPS_BYTES = 1024;

@@ -105,7 +105,15 @@ export class StartScene extends Phaser.Scene {
       if (mine && !shown.includes(mine)) shown.push(mine);
       friendsLine.setText(`🏆 ${shown.map(fmt).join(' · ')}`);
     }).catch(() => {});
-    this.ui.button(t.economy.play, W / 2, y + 422 * k, pw - 48 * k, 'primary', () => data.onPlay([...this.selected]));
+    // сразу показываем, что нажатие принято: старт ждёт ответа сервера; повторные тапы не шлют второй старт
+    let started = false;
+    const [, label] = this.ui.button(t.economy.play, W / 2, y + 422 * k, pw - 48 * k, 'primary', () => {
+      if (started) return;
+      started = true;
+      telegram.haptic('tap');
+      (label as Phaser.GameObjects.Text).setText(t.loading);
+      data.onPlay([...this.selected]);
+    });
     this.ui.button(t.toMap, W / 2, y + 474 * k, pw - 48 * k, 'secondary', data.onBack);
     (globalThis as Record<string, unknown>).__sakuraStart = this;
   }

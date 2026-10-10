@@ -11,7 +11,7 @@ import { SeasonScene } from './scenes/SeasonScene.ts';
 import type { SeasonData, SeasonTab } from './scenes/SeasonScene.ts';
 import { cardTitle, rewardText } from './meta.ts';
 import type { ChoiceData } from './scenes/ChoiceScene.ts';
-import type { Api, Auth, ClientEvent, FriendsView, GateView, Item, LivesView, MetaView, ProductId, ShopView, WalletView } from './api.ts';
+import type { Api, Attempt, Auth, ClientEvent, FriendsView, GateView, Item, LivesView, MetaView, ProductId, ShopView, WalletView } from './api.ts';
 import { FriendsScene } from './scenes/FriendsScene.ts';
 import type { FriendAction, FriendsData } from './scenes/FriendsScene.ts';
 import { GateScene } from './scenes/GateScene.ts';
@@ -498,12 +498,11 @@ function noLives(lives: LivesView, back: () => void): void {
 async function play(levelId: number, boosters: Item[] = []): Promise<void> {
   history.replaceState(null, '', `?${new URLSearchParams({ ...Object.fromEntries(params), level: String(levelId) })}`);
   if (!api) return startScene(bundled.get(levelId) ?? bundled.get(1)!, randomSeed(), null, null);
+  let attempt: Attempt;
   try {
-    const attempt = await api.start(levelId, boosters);
-    progress.lives = livesToClient(attempt.lives);
-    progress.wallet = attempt.wallet;
-    startScene(attempt.level, attempt.seed, attempt.attemptId, progress.lives, { assist: attempt.assist, startBoosters: attempt.startBoosters });
+    attempt = await withTimeout(api.start(levelId, boosters));
   } catch (e) {
+    if (e instanceof StartTimeout) return startFailed(levelId, boosters, t.startTimeout);
     if (e instanceof ApiError && e.code === 'no_lives') {
       noLives(livesToClient(e.body.lives as LivesView), () => showMap(levelId));
     } else if (e instanceof ApiError && e.code === 'episode_locked') {
@@ -513,7 +512,28 @@ async function play(levelId: number, boosters: Item[] = []): Promise<void> {
     } else {
       goOffline(levelId);
     }
+    return;
   }
+  progress.lives = livesToClient(attempt.lives);
+  progress.wallet = attempt.wallet;
+  try {
+    startScene(attempt.level, attempt.seed, attempt.attemptId, progress.lives, { assist: attempt.assist, startBoosters: attempt.startBoosters });
+  } catch (e) {
+    startFailed(levelId, boosters, e instanceof Error ? e.message : String(e));
+  }
+}
+
+/** Старт уровня ждёт сервер не дольше этого — дальше честно говорим, что связь подвела. */
+const START_TIMEOUT_MS = 15_000;
+class StartTimeout extends Error {}
+const withTimeout = <T>(p: Promise<T>): Promise<T> => Promise.race([
+  p, new Promise<never>((_, reject) => setTimeout(() => reject(new StartTimeout()), START_TIMEOUT_MS)),
+]);
+
+/** Уровень не запустился: сообщение с причиной и «Ещё раз» вместо молчащей кнопки. */
+function startFailed(levelId: number, boosters: Item[], reason: string): void {
+  track({ name: 'client_error', levelId, props: { where: 'start', reason: reason.slice(0, 200) } });
+  message(t.startFailed, reason, { button: { label: t.retry, onClick: () => void play(levelId, boosters) } });
 }
 
 function goOffline(levelId: number): void {
@@ -608,6 +628,18 @@ function startScene(
 }
 
 const track = (event: ClientEvent): void => void api?.events([event]);
+
+// ошибки клиента — в аналитику (не больше 5 за сессию): по ним видно, что сломалось на конкретных телефонах
+let errorsReported = 0;
+const reportError = (where: string, err: unknown): void => {
+  if (errorsReported++ >= 5) return;
+  const text = err instanceof Error ? `${err.message}\n${err.stack ?? ''}` : String(err);
+  track({ name: 'client_error', props: { where, reason: text.slice(0, 500), ua: navigator.userAgent.slice(0, 160) } });
+};
+window.addEventListener('error', (e) => reportError('error', e.error ?? e.message));
+window.addEventListener('unhandledrejection', (e) => reportError('promise', e.reason));
+// iOS может отобрать WebGL при нехватке памяти — тогда картинка замирает, хотя тапы доходят
+game.canvas?.addEventListener('webglcontextlost', () => reportError('webgl', 'context lost'));
 
 /** Сессии для аналитики: начало — запуск или возврат после 30+ минут, конец — когда Mini App свернули. */
 const SESSION_GAP_MS = 30 * 60_000;

@@ -36,6 +36,8 @@ export const pt: Strings = {
   noLivesText: 'As lanternas-coração se recarregam sozinhas: uma vida a cada 30 minutos.',
   tryAgain: 'Verificar',
   loading: 'Carregando…',
+  startFailed: 'O nível não começou',
+  startTimeout: 'O servidor não respondeu em 15 segundos. Verifique a conexão e tente de novo.',
   offline: 'Sem conexão — jogando sem salvar',
   you: 'Você',
   mikaInitial: 'M',

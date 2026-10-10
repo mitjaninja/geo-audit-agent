@@ -36,6 +36,8 @@ export const en: Strings = {
   noLivesText: 'Heart lanterns refill on their own: one life every 30 minutes.',
   tryAgain: 'Check',
   loading: 'Loading…',
+  startFailed: "The level didn't start",
+  startTimeout: "The server didn't answer in 15 seconds. Check your connection and try again.",
   offline: 'No connection — playing without saving',
   you: 'You',
   mikaInitial: 'M',

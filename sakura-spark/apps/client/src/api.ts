@@ -226,7 +226,7 @@ export class ApiError extends Error {
 }
 
 export interface ClientEvent {
-  readonly name: 'session_start' | 'session_end' | 'hint_shown' | 'tutorial_complete' | 'moves_offer_shown' | 'shop_opened';
+  readonly name: 'session_start' | 'session_end' | 'hint_shown' | 'tutorial_complete' | 'moves_offer_shown' | 'shop_opened' | 'client_error';
   readonly levelId?: number;
   readonly props?: Record<string, unknown>;
 }
