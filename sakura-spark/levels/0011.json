@@ -19,7 +19,7 @@
     { "type": "collect", "color": 3, "count": 22 }
   ],
   "intro": [
-    { "speaker": "pon", "text": "Лианы глициний держат кристалл: его нельзя двигать, но можно собрать в ряд — и лианы опадут." }
+    { "speaker": "pon", "text": "Лианы глициний держат кристалл: его нельзя двигать, но можно собрать в ряд — и лианы опадут.", "i18n": {"en": "Wisteria vines hold a crystal: you can’t move it, but you can match it — and the vines fall away.", "es": "Las enredaderas de glicinia sujetan un cristal: no puedes moverlo, pero sí combinarlo — y caerán.", "pt": "Trepadeiras de glicínia prendem um cristal: não dá para movê-lo, mas dá para combiná-lo — e elas caem."} }
   ],
   "stars": [3400, 5700, 7700]
 }

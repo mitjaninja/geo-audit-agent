@@ -1,0 +1,53 @@
+{
+  "id": 181,
+  "width": 9,
+  "height": 9,
+  "colors": 6,
+  "moves": 61,
+  "difficulty": "normal",
+  "goals": [
+    { "type": "jelly" },
+    { "type": "collect", "color": 2, "count": 33 }
+  ],
+  "stars": [8900, 14800, 19400],
+  "intro": [
+    { "speaker": "setsu", "text": "Императорский сад. Курогири рядом — я чувствую холод.", "i18n": {"en": "The Imperial Garden. Kurogiri is near — I can feel the cold.", "es": "El Jardín Imperial. Kurogiri está cerca — siento el frío.", "pt": "O Jardim Imperial. Kurogiri está perto — sinto o frio."} }
+  ],
+  "shape": [
+    "#########",
+    "#########",
+    "#########",
+    "#########",
+    "###__####",
+    "#########",
+    "#########",
+    "#########",
+    "#########"
+  ],
+  "portals": [
+    { "from": [3,3], "to": [5,4] },
+    { "from": [3,4], "to": [5,3] }
+  ],
+  "jelly": [
+    "000000000",
+    "000000000",
+    "000000000",
+    "000000000",
+    "111__1111",
+    "111111111",
+    "111111111",
+    "111111111",
+    "111111111"
+  ],
+  "blockers": [
+    ".........",
+    ".........",
+    ".........",
+    ".........",
+    ".........",
+    ".........",
+    ".........",
+    ".........",
+    ".vvvvvvv."
+  ]
+}

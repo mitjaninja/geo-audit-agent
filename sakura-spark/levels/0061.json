@@ -3,14 +3,14 @@
   "width": 9,
   "height": 9,
   "colors": 5,
-  "moves": 12,
+  "moves": 11,
   "difficulty": "normal",
   "goals": [
     { "type": "collect", "color": 3, "count": 35 }
   ],
   "stars": [5600, 9300, 11300],
   "intro": [
-    { "speaker": "mika", "text": "Небесный мост висит над облаками. Смотри под ноги — в нём дыры!" }
+    { "speaker": "mika", "text": "Небесный мост висит над облаками. Смотри под ноги — в нём дыры!", "i18n": {"en": "The Sky Bridge hangs above the clouds. Watch your step — it has holes!", "es": "El Puente Celeste cuelga sobre las nubes. ¡Mira dónde pisas — tiene agujeros!", "pt": "A Ponte Celeste fica acima das nuvens. Cuidado onde pisa — ela tem buracos!"} }
   ],
   "shape": [
     "#########",

@@ -10,7 +10,7 @@
   ],
   "stars": [9500, 15800, 20700],
   "intro": [
-    { "speaker": "ren", "text": "Бамбуковая роща. Лианы тут растут быстрее, чем я плету фонари." }
+    { "speaker": "ren", "text": "Бамбуковая роща. Лианы тут растут быстрее, чем я плету фонари.", "i18n": {"en": "The Bamboo Grove. Vines grow here faster than I can weave lanterns.", "es": "El Bosque de Bambú. Aquí las enredaderas crecen más rápido de lo que tejo farolillos.", "pt": "O Bosque de Bambu. Aqui as trepadeiras crescem mais rápido do que eu teço lanternas."} }
   ],
   "jelly": [
     "000000000",

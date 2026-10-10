@@ -3,7 +3,7 @@
   "width": 8,
   "height": 8,
   "colors": 5,
-  "moves": 24,
+  "moves": 25,
   "difficulty": "hard",
   "goals": [
     { "type": "jelly" }

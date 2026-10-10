@@ -10,7 +10,7 @@
   ],
   "stars": [14360, 18700, 19200],
   "intro": [
-    { "speaker": "mika", "text": "Квартал мастеров: здесь делают сундуки, которые не открыть одним ударом." }
+    { "speaker": "mika", "text": "Квартал мастеров: здесь делают сундуки, которые не открыть одним ударом.", "i18n": {"en": "The Artisans’ Quarter: they make chests here that won’t open with a single blow.", "es": "El Barrio de Artesanos: aquí hacen cofres que no se abren de un solo golpe.", "pt": "O Bairro dos Artesãos: aqui fazem baús que não abrem com um golpe só."} }
   ],
   "blockers": [
     ".........",

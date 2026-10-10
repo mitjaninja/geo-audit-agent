@@ -9,7 +9,7 @@
     { "type": "score", "target": 6000 }
   ],
   "intro": [
-    { "speaker": "ren", "text": "Я Рэн, мастер фонарей. Собери пять в ряд — получишь Радужный кристалл: он убирает все фишки одного цвета." }
+    { "speaker": "ren", "text": "Я Рэн, мастер фонарей. Собери пять в ряд — получишь Радужный кристалл: он убирает все фишки одного цвета.", "i18n": {"en": "I’m Ren, the lantern master. Match five in a row to get a Rainbow crystal: it removes every piece of one colour.", "es": "Soy Ren, maestro de farolillos. Junta cinco en fila y tendrás un Cristal arcoíris: quita todas las fichas de un color.", "pt": "Sou o Ren, mestre das lanternas. Junte cinco em fila e ganhe um Cristal arco-íris: ele tira todas as peças de uma cor."} }
   ],
   "stars": [6000, 7800, 8600]
 }

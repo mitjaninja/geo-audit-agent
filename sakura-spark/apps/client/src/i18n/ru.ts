@@ -232,7 +232,8 @@ export const ru = {
     endsIn: (time: string) => `До финиша гонки ${time}`,
   },
   season: {
-    tabs: { pass: '🎫 Пропуск', collection: '🎴 Коллекция', festival: '🎃 Фестиваль' },
+    daysLeft: (d: number, h: number) => `${d} д ${h} ч`,
+    tabs: { pass: 'Пропуск', collection: 'Коллекция', festival: 'Фестиваль' },
     pass: 'Фестивальный пропуск',
     tierOf: (tier: number, of: number, left: string) => `Ступень ${tier} из ${of} · сезон закончится через ${left}`,
     points: 'Очки: победа — 1, три звезды — +1, игра в чате — 1',

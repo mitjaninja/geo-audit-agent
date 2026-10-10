@@ -19,7 +19,7 @@
     { "type": "collect", "color": 2, "count": 20 }
   ],
   "intro": [
-    { "speaker": "pon", "text": "Лёд! Собирай кристаллы рядом со льдом — он треснет. Сквозь лёд фишки падают как ни в чём не бывало." }
+    { "speaker": "pon", "text": "Лёд! Собирай кристаллы рядом со льдом — он треснет. Сквозь лёд фишки падают как ни в чём не бывало.", "i18n": {"en": "Ice! Match crystals next to the ice and it will crack. Pieces fall through ice as if it weren’t there.", "es": "¡Hielo! Combina cristales junto al hielo y se agrietará. Las fichas caen a través del hielo como si nada.", "pt": "Gelo! Combine cristais ao lado do gelo e ele racha. As peças caem através do gelo como se nada fosse."} }
   ],
   "stars": [3200, 5400, 7800]
 }

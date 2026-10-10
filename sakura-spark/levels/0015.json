@@ -20,8 +20,8 @@
     { "type": "fog" }
   ],
   "intro": [
-    { "speaker": "mika", "text": "Это туман Курогири! Если не трогать его ход за ходом — он расползается и съедает кристаллы." },
-    { "speaker": "mika", "text": "Разгони весь туман — и Храмовый холм снова засияет!" }
+    { "speaker": "mika", "text": "Это туман Курогири! Если не трогать его ход за ходом — он расползается и съедает кристаллы.", "i18n": {"en": "This is Kurogiri’s fog! Leave it alone move after move and it spreads, swallowing crystals.", "es": "¡Es la niebla de Kurogiri! Si no la tocas jugada tras jugada, se extiende y se traga los cristales.", "pt": "É a névoa de Kurogiri! Se você não mexer nela jogada após jogada, ela se espalha e engole cristais."} },
+    { "speaker": "mika", "text": "Разгони весь туман — и Храмовый холм снова засияет!", "i18n": {"en": "Clear all the fog — and Temple Hill will shine again!", "es": "¡Despeja toda la niebla — y la Colina del Templo volverá a brillar!", "pt": "Dissipe toda a névoa — e a Colina do Templo vai brilhar de novo!"} }
   ],
   "stars": [3000, 5000, 7600]
 }

@@ -18,9 +18,9 @@
     { "type": "score", "target": 2000 }
   ],
   "intro": [
-    { "speaker": "mika", "text": "Я Мика, ученица храма огней. Курогири украл фестивальные фонари, и сакура в Хоширо больше не цветёт…" },
-    { "speaker": "mika", "text": "Поможешь вернуть свет? Начнём с храма — собирай кристаллы по три!" }
+    { "speaker": "mika", "text": "Я Мика, ученица храма огней. Курогири украл фестивальные фонари, и сакура в Хоширо больше не цветёт…", "i18n": {"en": "I’m Mika, an apprentice at the Temple of Lights. Kurogiri stole the festival lanterns, and the sakura in Hoshiro no longer blooms…", "es": "Soy Mika, aprendiz del Templo de las Luces. Kurogiri robó los farolillos del festival y el sakura de Hoshiro ya no florece…", "pt": "Sou a Mika, aprendiz do Templo das Luzes. Kurogiri roubou as lanternas do festival, e a sakura de Hoshiro não floresce mais…"} },
+    { "speaker": "mika", "text": "Поможешь вернуть свет? Начнём с храма — собирай кристаллы по три!", "i18n": {"en": "Will you help bring the light back? Let’s start at the temple — match crystals in threes!", "es": "¿Me ayudas a recuperar la luz? Empecemos por el templo — ¡junta cristales de tres en tres!", "pt": "Você me ajuda a trazer a luz de volta? Vamos começar pelo templo — junte cristais de três em três!"} }
   ],
-  "tutorial": { "swap": [[3,3],[4,3]], "text": "Потяни звезду вниз — три одинаковых кристалла в ряд исчезнут!" },
+  "tutorial": { "swap": [[3,3],[4,3]], "text": "Потяни звезду вниз — три одинаковых кристалла в ряд исчезнут!", "i18n": {"en": "Drag the star down — three matching crystals in a row will vanish!", "es": "Arrastra la estrella hacia abajo — ¡tres cristales iguales en fila desaparecerán!", "pt": "Arraste a estrela para baixo — três cristais iguais em fila vão sumir!"} },
   "stars": [2000, 4700, 7800]
 }

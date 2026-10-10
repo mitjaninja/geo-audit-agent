@@ -81,8 +81,10 @@ export class SeasonScene extends Phaser.Scene {
     this.input.on('pointerup', () => (this.drag = null));
   }
 
+  /** Сколько осталось: больше двух суток — «N д M ч», иначе часы:минуты:секунды. */
   private left(ms: number): string {
-    return formatTime(Math.max(0, (ms - this.data_.clockOffset - Date.now()) / 1000));
+    const s = Math.max(0, (ms - this.data_.clockOffset - Date.now()) / 1000);
+    return s > 2 * 86_400 ? t.season.daysLeft(Math.floor(s / 86_400), Math.floor((s % 86_400) / 3600)) : formatTime(s);
   }
 
   private passTab(x: number, y0: number, pw: number): number {
@@ -115,7 +117,7 @@ export class SeasonScene extends Phaser.Scene {
     this.ui.text(x + 24 * k, y, t.season.tier, 11, { color: theme.hint, originX: 0 });
     this.ui.text(x + pw * 0.38, y, t.season.free, 11, { color: theme.hint });
     this.ui.text(x + pw * 0.76, y, t.season.premium, 11, { color: '#9b7bff' });
-    y += 24 * k;
+    y += 36 * k;
     // ближайшие ступени: все незабранные открытые и следующие 4
     const rows = p.tiers.filter((t) => (t.tier <= p.tier && (!t.freeClaimed || (p.premium && !t.premiumClaimed))) || (t.tier > p.tier && t.tier <= p.tier + 4));
     for (const t of rows) {
@@ -201,10 +203,10 @@ export class SeasonScene extends Phaser.Scene {
     });
     y += 46 * k;
     this.ui.text(W / 2, y, t.season.festivalRewards(rewardText(f.stepReward), rewardText(f.finalReward)), 11, { color: theme.hint, wrap: pw - 48 * k, align: 'center' });
-    y += 40 * k;
+    y += 44 * k;
     if (f.done < n) this.ui.button(t.season.playStep(f.done + 1), W / 2, y, pw - 48 * k, 'primary', () => this.data_.onPlayFestival(f.levels[f.done]!));
     else this.ui.text(W / 2, y, t.season.festivalDone, 16, { bold: true });
-    return y + 30 * k;
+    return y + 40 * k;
   }
 
   private async act(fn: () => Promise<{ view?: SeasonView; notice?: string }>): Promise<void> {

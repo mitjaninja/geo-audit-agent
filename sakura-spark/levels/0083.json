@@ -3,7 +3,7 @@
   "width": 9,
   "height": 9,
   "colors": 5,
-  "moves": 27,
+  "moves": 24,
   "difficulty": "normal",
   "goals": [
     { "type": "lanterns", "count": 2 }

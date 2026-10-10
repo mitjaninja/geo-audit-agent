@@ -20,8 +20,8 @@
     { "type": "fog" }
   ],
   "intro": [
-    { "speaker": "mika", "text": "Курогири сам явился на Торговую улицу! Его туман гуще, чем на холме…" },
-    { "speaker": "ren", "text": "Береги лучи и бомбы — без них дайфуку не пробить. Удачи!" }
+    { "speaker": "mika", "text": "Курогири сам явился на Торговую улицу! Его туман гуще, чем на холме…", "i18n": {"en": "Kurogiri himself has come to Market Street! His fog is thicker than on the hill…", "es": "¡El mismísimo Kurogiri ha llegado a la Calle del Mercado! Su niebla es más espesa que en la colina…", "pt": "O próprio Kurogiri apareceu na Rua do Mercado! A névoa dele é mais densa que na colina…"} },
+    { "speaker": "ren", "text": "Береги лучи и бомбы — без них дайфуку не пробить. Удачи!", "i18n": {"en": "Save your beams and bombs — you can’t break daifuku without them. Good luck!", "es": "Guarda los rayos y las bombas — sin ellos no romperás los daifuku. ¡Suerte!", "pt": "Guarde os raios e as bombas — sem eles não dá para quebrar os daifuku. Boa sorte!"} }
   ],
   "stars": [7500, 12900, 16400]
 }

@@ -1,0 +1,23 @@
+{
+  "id": 169,
+  "width": 8,
+  "height": 8,
+  "colors": 6,
+  "moves": 35,
+  "difficulty": "normal",
+  "goals": [
+    { "type": "collect", "color": 5, "count": 39 },
+    { "type": "collect", "color": 0, "count": 39 }
+  ],
+  "stars": [5500, 9200, 11800],
+  "blockers": [
+    "........",
+    "........",
+    "iiiiiiii",
+    "........",
+    "........",
+    "........",
+    "........",
+    "........"
+  ]
+}

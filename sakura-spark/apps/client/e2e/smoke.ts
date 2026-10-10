@@ -521,13 +521,13 @@ try {
     await page.waitForFunction(() => (globalThis as any).__sakuraSeason?.scene.isActive() && (globalThis as any).__sakuraSeason.children.list.some((o: any) => o.text?.startsWith('Получено')));
     assert.deepEqual((await store.getWallet(60)).meta.pass?.free, [1]);
     await seasonReady();
-    await clickCanvas(page, await seasonButton('🎴 Коллекция'));
+    await clickCanvas(page, await seasonButton('Коллекция'));
     await seasonReady();
     await clickCanvas(page, await seasonButton('Надеть'));
     await page.waitForFunction(() => (globalThis as any).__sakuraSeason?.buttons.some((b: any) => b.label === 'Снять'));
     await page.screenshot({ path: `${OUT}/32-collection.png` });
     assert.equal((await store.getWallet(60)).meta.frame, 'sakura');
-    await clickCanvas(page, await seasonButton('🎃 Фестиваль'));
+    await clickCanvas(page, await seasonButton('Фестиваль'));
     await seasonReady();
     await page.waitForTimeout(200);
     await page.screenshot({ path: `${OUT}/33-festival.png` });

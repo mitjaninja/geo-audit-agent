@@ -29,7 +29,7 @@
     { "type": "jelly" }
   ],
   "intro": [
-    { "speaker": "mika", "text": "Под кристаллами — сладкое желе. Собирай фишки прямо над ним, пока всё желе не исчезнет." }
+    { "speaker": "mika", "text": "Под кристаллами — сладкое желе. Собирай фишки прямо над ним, пока всё желе не исчезнет.", "i18n": {"en": "There’s sweet jelly under the crystals. Match pieces right on top of it until all the jelly is gone.", "es": "Bajo los cristales hay gelatina dulce. Combina fichas justo encima hasta que desaparezca toda.", "pt": "Debaixo dos cristais há geleia doce. Combine peças bem em cima dela até toda a geleia sumir."} }
   ],
   "stars": [2900, 4800, 7100]
 }

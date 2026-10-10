@@ -1,0 +1,26 @@
+{
+  "id": 166,
+  "width": 9,
+  "height": 9,
+  "colors": 5,
+  "moves": 32,
+  "difficulty": "normal",
+  "goals": [
+    { "type": "fog" }
+  ],
+  "stars": [8900, 14900, 22300],
+  "intro": [
+    { "speaker": "mika", "text": "Река огней. Каждый вернувшийся фонарь плывёт по ней домой.", "i18n": {"en": "The River of Lights. Every lantern you bring back floats home along it.", "es": "El Río de Luces. Cada farolillo recuperado navega por él de vuelta a casa.", "pt": "O Rio de Luzes. Cada lanterna recuperada navega por ele de volta para casa."} }
+  ],
+  "blockers": [
+    ".........",
+    ".........",
+    ".........",
+    ".........",
+    ".........",
+    "IIIIIIIII",
+    ".........",
+    "ff.ffffff",
+    "fffffffff"
+  ]
+}

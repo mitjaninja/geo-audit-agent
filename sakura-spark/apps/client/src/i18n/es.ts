@@ -227,7 +227,8 @@ export const es: Strings = {
     endsIn: (time) => `La carrera termina en ${time}`,
   },
   season: {
-    tabs: { pass: '🎫 Pase', collection: '🎴 Colección', festival: '🎃 Festival' },
+    daysLeft: (d, h) => `${d} d ${h} h`,
+    tabs: { pass: 'Pase', collection: 'Colección', festival: 'Festival' },
     pass: 'Pase del festival',
     tierOf: (tier, of, left) => `Nivel ${tier} de ${of} · la temporada termina en ${left}`,
     points: 'Puntos: victoria — 1, tres estrellas — +1, partida en chat — 1',

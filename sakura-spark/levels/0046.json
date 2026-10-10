@@ -11,7 +11,7 @@
   ],
   "stars": [3900, 6500, 8500],
   "intro": [
-    { "speaker": "setsu", "text": "Зимний квартал. Лёд тут крепче, чем на реке, — бей дважды." }
+    { "speaker": "setsu", "text": "Зимний квартал. Лёд тут крепче, чем на реке, — бей дважды.", "i18n": {"en": "The Winter Quarter. The ice here is tougher than on the river — hit it twice.", "es": "El Barrio de Invierno. Aquí el hielo es más duro que el del río — golpéalo dos veces.", "pt": "O Bairro de Inverno. Aqui o gelo é mais duro que o do rio — bata duas vezes."} }
   ],
   "shape": [
     "########",

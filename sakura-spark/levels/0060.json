@@ -3,7 +3,7 @@
   "width": 9,
   "height": 9,
   "colors": 5,
-  "moves": 14,
+  "moves": 13,
   "difficulty": "superHard",
   "goals": [
     { "type": "collect", "color": 0, "count": 41 }

@@ -10,7 +10,7 @@
     { "type": "lanterns", "count": 2 }
   ],
   "intro": [
-    { "speaker": "mika", "text": "Наши фонарики! Их нельзя взорвать — опусти их на самый низ, убирая кристаллы под ними." }
+    { "speaker": "mika", "text": "Наши фонарики! Их нельзя взорвать — опусти их на самый низ, убирая кристаллы под ними.", "i18n": {"en": "Our lanterns! They can’t be blasted — bring them down to the very bottom by clearing the crystals below.", "es": "¡Nuestros farolillos! No se pueden explotar — bájalos hasta el fondo quitando los cristales de debajo.", "pt": "Nossas lanternas! Não dá para explodi-las — leve-as até o fundo tirando os cristais de baixo."} }
   ],
   "stars": [6800, 11400, 15000]
 }

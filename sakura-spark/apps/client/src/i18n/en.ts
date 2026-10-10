@@ -227,7 +227,8 @@ export const en: Strings = {
     endsIn: (time) => `Race ends in ${time}`,
   },
   season: {
-    tabs: { pass: '🎫 Pass', collection: '🎴 Collection', festival: '🎃 Festival' },
+    daysLeft: (d, h) => `${d} d ${h} h`,
+    tabs: { pass: 'Pass', collection: 'Collection', festival: 'Festival' },
     pass: 'Festival pass',
     tierOf: (tier, of, left) => `Tier ${tier} of ${of} · season ends in ${left}`,
     points: 'Points: win — 1, three stars — +1, chat game — 1',

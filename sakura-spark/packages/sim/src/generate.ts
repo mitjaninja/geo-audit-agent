@@ -155,7 +155,9 @@ export function draftLevel(id: number, attempt = 0): Draft {
     const cc = 1 + rng.int(w - 3);
     for (const [dr, dc] of [[0, 0], [0, 1], [1, 0], [1, 1]]) put(row0 + dr!, cc + dc!, strong ? 'K' : 'k');
   }
-  if (obstacle === 2) for (let i = 0; i < 4 + rng.int(4); i++) put(1 + rng.int(h - 2), rng.int(w), strong ? 'M' : 'm');
+  // дайфуку бьются только спецфишками: на желе и в тумане они делают цель почти невыполнимой (уровни 90–192
+  // первого прогона) — ставим их только к целям «собрать» и «очки»
+  if (obstacle === 2 && (kind === 'collect' || kind === 'score')) for (let i = 0; i < 4 + rng.int(4); i++) put(1 + rng.int(h - 2), rng.int(w), strong ? 'M' : 'm');
   if (obstacle === 3 && kind !== 'lanterns') for (let c = 1; c < w - 1; c++) put(h - 1, c, 'v');
 
   switch (kind) {

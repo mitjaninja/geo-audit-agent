@@ -71,7 +71,7 @@ test('every level in levels/ is valid, named by id, and playable', () => {
     assert.ok(!ids.has(level.id));
     ids.add(level.id);
     assert.deepEqual(lintLevel(level), [], file);
-    // проходимость: простой жадный выбор хода (больше снятых фишек, цели не учитывает) с двойным
+    // проходимость: простой жадный выбор хода (сначала прогресс целей, потом снятые фишки) с двойным
     // запасом ходов иногда выигрывает. Это ловит сломанный уровень; точная сложность — дело автотеста
     let wins = 0;
     for (let seed = 0; seed < 12 && wins === 0; seed++) {
@@ -81,8 +81,10 @@ test('every level in levels/ is valid, named by id, and playable', () => {
         let best = game.validSwaps()[0]!;
         let bestValue = -1;
         for (const s of game.validSwaps()) {
-          const step = game.clone(rng.int(1e9)).swap(s).events.find((e) => e.type === 'cascade');
-          const value = step?.type === 'cascade' ? step.step.cleared.length + step.step.created.length * 3 : 0;
+          const copy = game.clone(rng.int(1e9));
+          const step = copy.swap(s).events.find((e) => e.type === 'cascade');
+          const goals = copy.goalProgress().reduce((sum, g) => sum + (g.target > 0 ? Math.min(1, g.current / g.target) : 1), 0);
+          const value = goals * 1000 + (step?.type === 'cascade' ? step.step.cleared.length + step.step.created.length * 3 : 0);
           if (value > bestValue) [best, bestValue] = [s, value];
         }
         game.swap(best);

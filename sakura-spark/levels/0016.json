@@ -19,7 +19,7 @@
     { "type": "collect", "color": 0, "count": 22 }
   ],
   "intro": [
-    { "speaker": "ren", "text": "Добро пожаловать на Торговую улицу! Шоколадные дайфуку не боятся простых троек — только лучей и бомб." }
+    { "speaker": "ren", "text": "Добро пожаловать на Торговую улицу! Шоколадные дайфуку не боятся простых троек — только лучей и бомб.", "i18n": {"en": "Welcome to Market Street! Chocolate daifuku don’t fear plain matches — only beams and bombs.", "es": "¡Bienvenido a la Calle del Mercado! Los daifuku de chocolate no temen tríos simples — solo rayos y bombas.", "pt": "Bem-vindo à Rua do Mercado! Os daifuku de chocolate não temem trios simples — só raios e bombas."} }
   ],
   "stars": [3000, 5000, 6700]
 }

@@ -3,7 +3,7 @@
   "width": 8,
   "height": 8,
   "colors": 5,
-  "moves": 12,
+  "moves": 13,
   "difficulty": "normal",
   "goals": [
     { "type": "collect", "color": 2, "count": 24 },

@@ -10,8 +10,8 @@
   ],
   "stars": [7300, 12100, 18000],
   "intro": [
-    { "speaker": "mika", "text": "Порт фонарей! Здесь корабли привозили огни со всего света." },
-    { "speaker": "ren", "text": "Курогири спрятал их в трюмах. Поможешь достать?" }
+    { "speaker": "mika", "text": "Порт фонарей! Здесь корабли привозили огни со всего света.", "i18n": {"en": "Lantern Port! Ships brought lights here from all over the world.", "es": "¡El Puerto de Farolillos! Aquí los barcos traían luces de todo el mundo.", "pt": "O Porto das Lanternas! Aqui os navios traziam luzes do mundo inteiro."} },
+    { "speaker": "ren", "text": "Курогири спрятал их в трюмах. Поможешь достать?", "i18n": {"en": "Kurogiri hid them in the ships’ holds. Will you help get them out?", "es": "Kurogiri los escondió en las bodegas. ¿Me ayudas a sacarlos?", "pt": "Kurogiri as escondeu nos porões. Você me ajuda a tirá-las de lá?"} }
   ],
   "jelly": [
     "000000000",

@@ -11,7 +11,7 @@
   ],
   "stars": [4900, 8100, 9600],
   "intro": [
-    { "speaker": "setsu", "text": "Лунная гавань. Ночью фонари видно лучше — давай вернём их все." }
+    { "speaker": "setsu", "text": "Лунная гавань. Ночью фонари видно лучше — давай вернём их все.", "i18n": {"en": "Moon Harbor. Lanterns are easier to see at night — let’s bring them all back.", "es": "La Bahía de la Luna. De noche los farolillos se ven mejor — recuperémoslos todos.", "pt": "A Baía da Lua. À noite as lanternas se veem melhor — vamos trazer todas de volta."} }
   ],
   "shape": [
     "#########",

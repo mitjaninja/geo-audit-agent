@@ -3,7 +3,7 @@
   "width": 9,
   "height": 9,
   "colors": 5,
-  "moves": 12,
+  "moves": 11,
   "difficulty": "normal",
   "goals": [
     { "type": "fog" }

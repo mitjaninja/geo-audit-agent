@@ -35,7 +35,7 @@
     { "type": "jelly" }
   ],
   "intro": [
-    { "speaker": "pon", "text": "Порталы! Кристалл, упавший в портал, вылетает из другого. Следи за стрелками дорожки." }
+    { "speaker": "pon", "text": "Порталы! Кристалл, упавший в портал, вылетает из другого. Следи за стрелками дорожки.", "i18n": {"en": "Portals! A crystal that falls into a portal pops out of the other one. Watch the arrows.", "es": "¡Portales! Un cristal que cae en un portal sale por el otro. Fíjate en las flechas.", "pt": "Portais! Um cristal que cai num portal sai pelo outro. Repare nas setas."} }
   ],
   "stars": [4700, 7800, 10700]
 }
