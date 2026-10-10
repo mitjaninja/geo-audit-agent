@@ -3,7 +3,7 @@
   "width": 8,
   "height": 8,
   "colors": 5,
-  "moves": 32,
+  "moves": 34,
   "difficulty": "normal",
   "shape": [
     "_######_",

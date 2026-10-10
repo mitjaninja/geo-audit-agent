@@ -3,7 +3,7 @@
   "width": 8,
   "height": 8,
   "colors": 5,
-  "moves": 20,
+  "moves": 19,
   "difficulty": "normal",
   "blockers": [
     "........",
