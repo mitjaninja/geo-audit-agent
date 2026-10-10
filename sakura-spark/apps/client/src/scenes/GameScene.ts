@@ -24,7 +24,11 @@ export interface GameSceneData {
   readonly lives: LivesView | null;
   /** Итог партии: онлайн — от сервера (он проигрывает ходы сам), офлайн — локальный. */
   readonly onGameOver: (game: Match3Game, timedOut: boolean) => Promise<GameOverResult>;
-  readonly onFinish: (action: 'next' | 'retry' | 'map') => void;
+  readonly onFinish: (action: 'next' | 'retry' | 'map' | 'room') => void;
+  /** Партия в комнате чат-режима: итог — место в рейтинге чата, вступления не показываются. */
+  readonly room: { readonly id: string } | null;
+  /** Новичок из чата (PRD): подсказка хода сразу, на первых N ходах. */
+  readonly eagerHints: number;
   /** Игрок вышел посреди уровня (попытка закрывается как проигрыш). */
   readonly onExit: (game: Match3Game) => Promise<void>;
   /** Уровни, где вступление и обучающий ход уже показаны. */
@@ -38,6 +42,7 @@ export interface GameOverResult {
   readonly score: number;
   readonly stars: number;
   readonly lives: LivesView | null;
+  readonly room?: { readonly place: number; readonly players: number };
 }
 
 const key = (p: Pos) => `${p.row},${p.col}`;
@@ -151,8 +156,10 @@ export class GameScene extends Phaser.Scene {
   };
 
   override update(time: number): void {
+    // новичку из чата — подсказка почти сразу на первых ходах, остальным — после паузы
+    const hintDelay = this.match.history.length < this.data_.eagerHints ? 600 : HINT_DELAY_MS;
     if (!this.busy && !this.finished && !this.onboarding && !this.gate && this.hintObjects.length === 0
-      && this.match.status === 'playing' && time - this.lastInput > HINT_DELAY_MS) {
+      && this.match.status === 'playing' && time - this.lastInput > hintDelay) {
       this.showHint();
     }
     if (this.deadline === undefined || this.finished || this.hiddenAt !== undefined) return;
@@ -169,8 +176,9 @@ export class GameScene extends Phaser.Scene {
   // ---------- обучение и подсказки ----------
 
   private async runOnboarding(): Promise<void> {
-    const { level, intros } = this.data_;
-    const first = !intros.has(level.id);
+    const { level, intros, room } = this.data_;
+    // в комнате чата обучение не показываем: у всех одна и та же партия, а рейтинг идёт по очкам
+    const first = !room && !intros.has(level.id);
     if (first && level.intro) {
       this.onboarding = true;
       await this.speak(level.intro);
@@ -718,6 +726,25 @@ export class GameScene extends Phaser.Scene {
       : `${t.lives(lives.lives, lives.max)}${!won && lives.nextLifeAt ? ` · ${t.nextLife(formatTime((lives.nextLifeAt - Date.now()) / 1000))}` : ''}`;
     const finish = this.data_.onFinish;
     let stars: Phaser.GameObjects.Image[] = [];
+    if (result.room) {
+      this.dialog({
+        title: t.room.place(result.room.place, result.room.players),
+        height: 360,
+        body: (y) => {
+          stars = [0, 1, 2].map((i) => this.add.image(W / 2 + (i - 1) * 70 * k, y + 100 * k - (i === 1 ? 10 * k : 0), 'star')
+            .setDisplaySize(62 * k, 62 * k).setTint(i < result.stars ? 0xffc93c : 0xd9d2e3));
+          return [...stars, this.add.text(W / 2, y + 150 * k, `${t.score}: ${result.score}${livesLine ? `\n${livesLine}` : ''}`, {
+            fontFamily: FONT, fontSize: `${Math.round(16 * k)}px`, color: theme.hint, align: 'center',
+          }).setOrigin(0.5)];
+        },
+        buttons: [
+          { label: t.room.toRanking, primary: true, onClick: () => finish('room') },
+          { label: t.retry, primary: false, onClick: () => finish('retry') },
+          { label: t.toMap, primary: false, onClick: () => finish('map') },
+        ],
+      });
+      return;
+    }
     this.dialog({
       title: won ? t.win : t.lose,
       height: won ? 360 : 320,

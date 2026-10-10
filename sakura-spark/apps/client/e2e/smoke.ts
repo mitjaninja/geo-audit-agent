@@ -163,6 +163,60 @@ try {
     await page.context().close();
   }
 
+  console.log('chat room: link → room screen → free attempt with newcomer hints → place in chat → ranking');
+  {
+    await service.login({ id: 10, firstName: 'Мика' });
+    const room = await service.createRoom(10, 'challenge');
+    const { page, errors } = await open(`?devUser=11&room=${room.id}`, 'light', false);
+    await page.waitForFunction(() => (globalThis as any).__sakuraRoom?.scene.isActive() && (globalThis as any).__sakuraRoom.buttons.length > 0);
+    await page.waitForTimeout(300);
+    await page.screenshot({ path: `${OUT}/8-room.png` });
+    const play = (await g(page, 'globalThis.__sakuraRoom.buttons[0]')) as { label: string; x: number; y: number };
+    assert.equal(play.label, 'Играть — бесплатно');
+    await clickCanvas(page, play);
+    await gameReady(page);
+    assert.equal(await g(page, 's.onboarding'), false, 'no intro in a chat room');
+    assert.equal(await g(page, 's.match.options.seed'), room.seed, 'same seed as everyone in the chat');
+    // новичок: подсказка появляется почти сразу
+    await page.waitForFunction(() => (globalThis as any).__sakura.hintObjects.length > 0, undefined, { timeout: 3000 });
+    await page.evaluate(async () => {
+      const s = (globalThis as any).__sakura;
+      while (s.match.status === 'playing') {
+        let best = s.match.validSwaps()[0];
+        let bestValue = -1;
+        for (const w of s.match.validSwaps()) {
+          const step = s.match.clone(7).swap(w).events.find((e: any) => e.type === 'cascade');
+          const value = step ? step.step.cleared.length + step.step.created.length * 3 : 0;
+          if (value > bestValue) [best, bestValue] = [w, value];
+        }
+        await s.trySwap(best);
+      }
+    });
+    await page.waitForFunction(() => (globalThis as any).__sakura.dialogButtons.some((b: any) => b.label === 'К рейтингу'));
+    await page.waitForTimeout(700);
+    await page.screenshot({ path: `${OUT}/9-room-result.png` });
+    const view = await service.roomView(room.id, 11);
+    assert.equal(view.players, 1, 'the server accepted the replay (moves at human speed)');
+    assert.equal(view.me.place, 1);
+    await clickDialog(page, 'К рейтингу');
+    await page.waitForFunction(() => (globalThis as any).__sakuraRoom?.scene.isActive() && (globalThis as any).__sakuraRoom.buttons.length > 0);
+    assert.equal(await g(page, 'globalThis.__sakuraRoom.buttons[0].label'), 'Играть · ♥ 1', 'the next attempt costs a life');
+    await page.waitForTimeout(300);
+    await page.screenshot({ path: `${OUT}/10-room-ranking.png` });
+    assert.deepEqual(errors, []);
+    await page.context().close();
+  }
+
+  console.log('map: «В чат» outside Telegram explains where sharing works');
+  {
+    const { page, errors } = await open('?devUser=12');
+    await mapReady(page);
+    await clickCanvas(page, (await g(page, 'm.shareButton')) as { x: number; y: number });
+    await page.waitForFunction(() => (globalThis as any).__sakuraMessage?.scene.isActive());
+    assert.deepEqual(errors, []);
+    await page.context().close();
+  }
+
   console.log('online: exit mid-level via ✕ costs a life and returns to the map');
   {
     const { page, errors } = await open('?devUser=3');
@@ -190,6 +244,7 @@ try {
     await g(page, 'm.scrollTo(1)');
     await clickCanvas(page, (await g(page, 'm.nodeOnScreen(1)')) as { x: number; y: number });
     await page.waitForFunction(() => (globalThis as any).__sakuraMessage?.buttonCenter && (globalThis as any).__sakuraMessage.scene.isActive());
+    assert.ok(await g(page, 'msg.secondaryCenter'), '«ask for a life in chat» is offered');
     await page.waitForTimeout(400);
     await page.screenshot({ path: `${OUT}/6-no-lives.png` });
     await store.saveLives(2, { lives: 5, updatedAt: Date.now(), infiniteUntil: 0 });

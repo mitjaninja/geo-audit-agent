@@ -137,6 +137,22 @@ test('challenge: share card, free first attempt, then a life; ranking with place
   assert.deepEqual(me.levels, {});
 });
 
+test('share falls back to a link when the Bot API refuses to prepare the card', async () => {
+  const failing = (async () => new Response(JSON.stringify({ ok: false, description: 'Bad Request: USER_ID_INVALID' }))) as unknown as typeof fetch;
+  const service = new GameService({ store, levels: LEVELS, now: () => clock });
+  const bot = new ChatBot({ api: new BotApi('1:t', failing), service, webAppUrl: 'https://game.example/', botUsername: 'sk_bot', directLinks: true });
+  const app = createApp({ service, botToken: '1:t', devAuth: true, now: () => clock, bot: { chat: bot, secret: 's' } });
+  await new Promise<void>((r) => app.listen(0, r));
+  const res = await fetch(`http://127.0.0.1:${(app.address() as AddressInfo).port}/api/rooms`, {
+    method: 'POST', headers: { authorization: 'dev 1', 'content-type': 'application/json' }, body: JSON.stringify({ mode: 'challenge' }),
+  });
+  const body = (await res.json()) as any;
+  app.close();
+  assert.equal(res.status, 200);
+  assert.equal(body.preparedMessageId, null);
+  assert.match(body.link, /^https:\/\/t\.me\/sk_bot\?startapp=r/, 'direct startapp link when Main Mini App is on');
+});
+
 test('anti-cheat: moves faster than animations are rejected', async () => {
   const { roomId } = (await call('POST', '/api/rooms', { mode: 'challenge' })).body;
   const s = (await call('POST', `/api/rooms/${roomId}/attempts`)).body;

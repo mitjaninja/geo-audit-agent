@@ -10,6 +10,8 @@ import type { GameOverResult, GameSceneData } from './scenes/GameScene.ts';
 import { MapScene } from './scenes/MapScene.ts';
 import type { MapData } from './scenes/MapScene.ts';
 import { MessageScene } from './scenes/MessageScene.ts';
+import { RoomScene } from './scenes/RoomScene.ts';
+import type { RoomData } from './scenes/RoomScene.ts';
 import type { MessageData } from './scenes/MessageScene.ts';
 import { telegram } from './telegram.ts';
 import { themeFrom } from './theme.ts';
@@ -67,9 +69,9 @@ const progress = {
   lives: null as LivesView | null,
 };
 
-type SceneKey = 'game' | 'message' | 'map';
-function show(scene: SceneKey, data: GameSceneData | MessageData | MapData): void {
-  for (const key of ['game', 'message', 'map']) if (key !== scene && game.scene.isActive(key)) game.scene.stop(key);
+type SceneKey = 'game' | 'message' | 'map' | 'room';
+function show(scene: SceneKey, data: GameSceneData | MessageData | MapData | RoomData): void {
+  for (const key of ['game', 'message', 'map', 'room']) if (key !== scene && game.scene.isActive(key)) game.scene.stop(key);
   if (game.scene.isActive(scene)) game.scene.getScene(scene)!.scene.restart(data);
   else game.scene.start(scene, data);
 }
@@ -86,6 +88,60 @@ function showMap(focus?: number): void {
   show('map', {
     theme, dpr, levelCount: progress.levelCount, maxLevel: progress.maxLevel, stars: progress.stars,
     lives: progress.lives, onPlay: (id) => void play(id), ...(focus !== undefined ? { focus } : {}),
+    onShare: api ? () => void shareToChat('challenge', () => showMap(focus)) : null,
+  });
+}
+
+/**
+ * «Позвать в чат» / «Попросить жизнь»: сервер создаёт комнату и готовит карточку, Telegram показывает
+ * выбор чата (shareMessage, Bot API 8.0). Без него — ссылка через t.me/share; вне Telegram — подсказка.
+ */
+async function shareToChat(mode: 'challenge' | 'help', back: () => void): Promise<void> {
+  if (!api) return;
+  if (!telegram.inTelegram) {
+    message(t.share.title, t.share.onlyTelegram, { button: { label: t.toMap, onClick: back } });
+    return;
+  }
+  try {
+    const room = await api.createRoom(mode);
+    if (room.preparedMessageId && telegram.canShareMessage) await telegram.shareMessage(room.preparedMessageId);
+    else if (room.link) telegram.openLink(`https://t.me/share/url?url=${encodeURIComponent(room.link)}`);
+  } catch (e) {
+    if (e instanceof ApiError && e.code === 'room_limit') message(t.share.title, t.share.limit, { button: { label: t.toMap, onClick: back } });
+  }
+}
+
+/** Комната челленджа из ссылки в чате. */
+async function showRoom(roomId: string): Promise<void> {
+  if (!api) return showMap();
+  try {
+    const view = await api.room(roomId);
+    show('room', { theme, dpr, view, clockOffset, onPlay: () => void playRoom(roomId), onMap: () => showMap() });
+  } catch {
+    message(t.room.title, t.room.notFound, { button: { label: t.toMap, onClick: () => showMap() } });
+  }
+}
+
+async function playRoom(roomId: string): Promise<void> {
+  if (!api) return;
+  try {
+    const attempt = await api.startRoom(roomId);
+    progress.lives = livesToClient(attempt.lives);
+    // новичок из чата (PRD): подсказки на первых трёх ходах
+    const newcomer = progress.maxLevel <= 1 && Object.keys(progress.stars).length === 0;
+    startScene(attempt.level, attempt.seed, attempt.attemptId, progress.lives, { roomId, eagerHints: newcomer ? 3 : 0 });
+  } catch (e) {
+    if (e instanceof ApiError && e.code === 'no_lives') noLives(livesToClient(e.body.lives as LivesView), () => void showRoom(roomId));
+    else await showRoom(roomId);
+  }
+}
+
+function noLives(lives: LivesView, back: () => void): void {
+  progress.lives = lives;
+  message(t.noLivesTitle, t.noLivesText, {
+    ...(lives.nextLifeAt ? { countdown: { until: lives.nextLifeAt, label: t.nextLife } } : {}),
+    button: { label: t.toMap, onClick: () => showMap() },
+    ...(api ? { secondary: { label: t.share.askLife, onClick: () => void shareToChat('help', back) } } : {}),
   });
 }
 
@@ -98,12 +154,7 @@ async function play(levelId: number): Promise<void> {
     startScene(attempt.level, attempt.seed, attempt.attemptId, progress.lives);
   } catch (e) {
     if (e instanceof ApiError && e.code === 'no_lives') {
-      const lives = livesToClient(e.body.lives as LivesView);
-      progress.lives = lives;
-      message(t.noLivesTitle, t.noLivesText, {
-        ...(lives.nextLifeAt ? { countdown: { until: lives.nextLifeAt, label: t.nextLife } } : {}),
-        button: { label: t.toMap, onClick: () => showMap(levelId) },
-      });
+      noLives(livesToClient(e.body.lives as LivesView), () => showMap(levelId));
     } else if (e instanceof ApiError && e.code === 'level_locked') {
       await play(Number(e.body.maxLevel ?? 1));
     } else {
@@ -127,7 +178,11 @@ function recordStars(levelId: number, stars: number): void {
   progress.stars[levelId] = { stars: Math.max(prev, stars) };
 }
 
-function startScene(level: LevelDef, seed: number, attemptId: string | null, lives: LivesView | null): void {
+function startScene(
+  level: LevelDef, seed: number, attemptId: string | null, lives: LivesView | null,
+  opts: { roomId?: string; eagerHints?: number } = {},
+): void {
+  const roomId = opts.roomId ?? null;
   const onGameOver = async (match: Match3Game, timedOut: boolean): Promise<GameOverResult> => {
     if (!api || !attemptId) {
       const won = match.status === 'won';
@@ -137,8 +192,12 @@ function startScene(level: LevelDef, seed: number, attemptId: string | null, liv
     const r = await api.finish(attemptId, match.history, timedOut);
     progress.maxLevel = Math.max(progress.maxLevel, r.maxLevel);
     progress.lives = livesToClient(r.lives);
-    if (r.result === 'won') recordStars(level.id, r.stars);
-    return { won: r.result === 'won', score: r.score, stars: r.stars, lives: progress.lives };
+    // в комнате звёзды не идут в прогресс карты
+    if (r.result === 'won' && !roomId) recordStars(level.id, r.stars);
+    return {
+      won: r.result === 'won', score: r.score, stars: r.stars, lives: progress.lives,
+      ...(r.room ? { room: { place: r.room.place, players: r.room.players } } : {}),
+    };
   };
   const onExit = async (match: Match3Game): Promise<void> => {
     if (api && attemptId) {
@@ -146,12 +205,15 @@ function startScene(level: LevelDef, seed: number, attemptId: string | null, liv
       const r = await api.finish(attemptId, match.history, false).catch(() => null);
       if (r) progress.lives = livesToClient(r.lives);
     }
-    showMap(level.id);
+    if (roomId) await showRoom(roomId);
+    else showMap(level.id);
   };
   show('game', {
     level, seed, theme, dpr, lives, onGameOver, onExit, intros, track,
+    room: roomId ? { id: roomId } : null, eagerHints: opts.eagerHints ?? 0,
     onFinish: (action) => {
-      if (action === 'map') return showMap(level.id);
+      if (action === 'map') return showMap(roomId ? undefined : level.id);
+      if (roomId) return void (action === 'retry' ? playRoom(roomId) : showRoom(roomId));
       if (action === 'retry') return void play(level.id);
       // «Дальше» после последнего уровня — на карту: новые уровни выходят каждую неделю
       if (level.id < progress.levelCount) void play(level.id + 1);
@@ -195,6 +257,10 @@ async function boot(): Promise<void> {
     progress.maxLevel = bundled.size;
     progress.levelCount = bundled.size;
   }
+  // комната чат-режима: из startapp (прямая ссылка) или ?room= (кнопка бота в личке)
+  const start = telegram.startParam;
+  const roomId = start?.startsWith('r') ? start : params.get('room');
+  if (api && roomId) return showRoom(roomId);
   // ?level=N — сразу в уровень (разработка, ссылки); иначе — карта
   const wanted = Number(params.get('level') ?? 0);
   if (wanted >= 1) await play(Math.min(wanted, Math.min(progress.maxLevel, progress.levelCount)));
@@ -205,6 +271,7 @@ game.events.once('ready', () => {
   game.scene.add('game', GameScene, false);
   game.scene.add('message', MessageScene, false);
   game.scene.add('map', MapScene, false);
+  game.scene.add('room', RoomScene, false);
   // Boot рисует текстуры и сразу передаёт управление
   game.scene.add('boot', BootScene, true, { onReady: () => void boot() });
 });

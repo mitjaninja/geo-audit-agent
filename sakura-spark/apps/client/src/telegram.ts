@@ -3,6 +3,9 @@ import type { TelegramThemeParams } from './theme.ts';
 /** Только то, что нужно игре, из Telegram.WebApp. Вне Telegram всё — безопасные заглушки. */
 interface WebApp {
   initData: string;
+  initDataUnsafe?: { start_param?: string };
+  shareMessage?(id: string, cb?: (sent: boolean) => void): void;
+  openTelegramLink?(url: string): void;
   version: string;
   platform: string;
   themeParams: TelegramThemeParams;
@@ -38,6 +41,31 @@ export const telegram = {
   /** Подписанные данные запуска — сервер проверяет их подпись на каждом запросе. */
   get initData(): string {
     return webApp()?.initData ?? '';
+  },
+
+  /** Параметр startapp из ссылки t.me/<bot>?startapp=… (комната чат-режима). */
+  get startParam(): string | null {
+    return webApp()?.initDataUnsafe?.start_param ?? null;
+  },
+
+  get canShareMessage(): boolean {
+    const tg = webApp();
+    return !!tg?.shareMessage && (tg.isVersionAtLeast?.('8.0') ?? false);
+  },
+
+  /** Отправить подготовленную ботом карточку в чат (Bot API 8.0). true — пользователь отправил. */
+  shareMessage(id: string): Promise<boolean> {
+    const tg = webApp();
+    if (!tg?.shareMessage) return Promise.resolve(false);
+    return new Promise((resolve) => tg.shareMessage!(id, (sent) => resolve(sent)));
+  },
+
+  /** Открыть t.me-ссылку внутри Telegram (запасной путь, если shareMessage недоступен). */
+  openLink(url: string): boolean {
+    const tg = webApp();
+    if (!tg?.openTelegramLink) return false;
+    tg.openTelegramLink(url);
+    return true;
   },
 
   get themeParams(): TelegramThemeParams | undefined {

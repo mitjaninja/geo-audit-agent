@@ -31,6 +31,33 @@ export interface FinishResult {
   readonly bestScore: number;
   readonly lives: LivesView;
   readonly maxLevel: number;
+  /** Попытка в комнате чата: место в рейтинге. */
+  readonly room?: { readonly id: string; readonly place: number; readonly players: number };
+}
+
+export interface RoomView {
+  readonly id: string;
+  readonly mode: 'challenge' | 'help';
+  readonly levelId: number;
+  readonly creatorName: string;
+  readonly expiresAt: number;
+  readonly expired: boolean;
+  readonly players: number;
+  readonly top: readonly { readonly place: number; readonly name: string; readonly score: number; readonly stars: number }[];
+  readonly me: { readonly place: number | null; readonly bestScore: number | null; readonly attempts: number };
+  readonly nextAttemptFree: boolean;
+  readonly gifts: number;
+  readonly maxGifts: number;
+  readonly serverTime: number;
+}
+
+export interface CreatedRoom {
+  readonly roomId: string;
+  readonly mode: 'challenge' | 'help';
+  readonly levelId: number;
+  /** Карточка для Telegram.WebApp.shareMessage; null — бот не настроен (разработка). */
+  readonly preparedMessageId: string | null;
+  readonly link: string | null;
 }
 
 export type Auth = { readonly kind: 'tma'; readonly initData: string } | { readonly kind: 'dev'; readonly userId: string };
@@ -53,6 +80,9 @@ export interface Api {
   events(events: readonly ClientEvent[]): Promise<void>;
   start(levelId: number): Promise<Attempt>;
   finish(attemptId: string, swaps: readonly Swap[], timedOut: boolean): Promise<FinishResult>;
+  createRoom(mode: 'challenge' | 'help'): Promise<CreatedRoom>;
+  room(id: string): Promise<RoomView>;
+  startRoom(id: string): Promise<Attempt>;
 }
 
 export function createApi(auth: Auth, base = '', fetchImpl: typeof fetch = (...a) => fetch(...a)): Api {
@@ -73,5 +103,8 @@ export function createApi(auth: Auth, base = '', fetchImpl: typeof fetch = (...a
     events: (events) => call<unknown>('POST', '/api/events', { events }, true).then(() => undefined, () => undefined),
     start: (levelId) => call<Attempt>('POST', '/api/attempts', { levelId }),
     finish: (attemptId, swaps, timedOut) => call<FinishResult>('POST', `/api/attempts/${attemptId}/finish`, { swaps, timedOut }),
+    createRoom: (mode) => call<CreatedRoom>('POST', '/api/rooms', { mode }),
+    room: (id) => call<RoomView>('GET', `/api/rooms/${encodeURIComponent(id)}`),
+    startRoom: (id) => call<Attempt>('POST', `/api/rooms/${encodeURIComponent(id)}/attempts`),
   };
 }

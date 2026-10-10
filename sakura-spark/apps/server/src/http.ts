@@ -106,8 +106,13 @@ export function createApp(deps: HttpDeps): Server {
       const { mode } = await readJson(req);
       if (mode !== 'challenge' && mode !== 'help') throw new HttpError(400, 'bad_request');
       const room = await deps.service.createRoom(user.id, mode);
-      // карточку для shareMessage готовит бот; без бота (разработка) — только ссылка
-      const preparedMessageId = deps.bot ? await deps.bot.chat.prepare(room, user.id) : null;
+      // карточку для shareMessage готовит бот; без бота (разработка) или при сбое Bot API — только ссылка
+      const preparedMessageId = deps.bot
+        ? await deps.bot.chat.prepare(room, user.id).catch((e: unknown) => {
+          log(`savePreparedInlineMessage: ${String(e)}`);
+          return null;
+        })
+        : null;
       return send(res, 200, { roomId: room.id, mode, levelId: room.levelId, preparedMessageId, link: deps.bot?.chat.link(room.id) ?? null });
     }
     const roomPath = /^\/api\/rooms\/(r[A-Za-z0-9]{1,32})(\/attempts)?$/.exec(path);

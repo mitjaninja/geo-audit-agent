@@ -18,6 +18,8 @@ export interface MapData {
   /** Уровень, к которому прокрутить карту (по умолчанию — текущий). */
   readonly focus?: number;
   readonly onPlay: (levelId: number) => void;
+  /** «Позвать в чат» — создать челлендж и отправить карточку; null — офлайн. */
+  readonly onShare: (() => void) | null;
 }
 
 const FONT = 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
@@ -29,6 +31,10 @@ export class MapScene extends Phaser.Scene {
   private geo!: MapGeometry;
   private drag: { y: number; scroll: number; moved: number } | null = null;
   private livesText!: Phaser.GameObjects.Text;
+  /** Кнопка «В чат» в пикселях canvas — для e2e. */
+  shareButton: { x: number; y: number } | null = null;
+  /** Нажатие по кнопке поверх карты — чтобы тап не попал в узел уровня под ней. */
+  private shareTapped = false;
 
   constructor() {
     super('map');
@@ -36,6 +42,8 @@ export class MapScene extends Phaser.Scene {
 
   create(data: MapData): void {
     this.data_ = data;
+    this.shareButton = null;
+    this.shareTapped = false;
     const { theme, dpr: k, levelCount, maxLevel, stars } = data;
     const W = this.scale.width;
     const H = this.scale.height;
@@ -126,6 +134,25 @@ export class MapScene extends Phaser.Scene {
       fontFamily: FONT, fontSize: `${Math.round(16 * k)}px`, fontStyle: 'bold', color: theme.text,
     }).setOrigin(1, 0.5).setScrollFactor(0).setDepth(11);
 
+    if (data.onShare) {
+      const bw = 112 * k;
+      const bh = 34 * k;
+      const bx = W / 2;
+      const by = barY + 24 * k;
+      this.add.graphics().setScrollFactor(0).setDepth(11)
+        .fillStyle(hexToInt(theme.button), 1).fillRoundedRect(bx - bw / 2, by - bh / 2, bw, bh, bh / 2);
+      this.add.text(bx, by, t.share.invite, {
+        fontFamily: FONT, fontSize: `${Math.round(14 * k)}px`, fontStyle: 'bold', color: theme.buttonText,
+      }).setOrigin(0.5).setScrollFactor(0).setDepth(12);
+      const share = data.onShare;
+      this.add.zone(bx, by, bw, bh).setScrollFactor(0).setDepth(12).setInteractive({ useHandCursor: true })
+        .on('pointerup', () => {
+          this.shareTapped = true;
+          share();
+        });
+      this.shareButton = { x: bx, y: by };
+    }
+
     const focus = g.node(Math.min(data.focus ?? current, levelCount));
     this.cameras.main.setScroll(0, focus.y - H * 0.6);
 
@@ -140,6 +167,10 @@ export class MapScene extends Phaser.Scene {
     this.input.on('pointerup', (p: Phaser.Input.Pointer) => {
       const d = this.drag;
       this.drag = null;
+      if (this.shareTapped) {
+        this.shareTapped = false;
+        return;
+      }
       if (!d || d.moved > TAP_SLOP * k) return;
       const id = this.levelAt(p.worldX, p.worldY);
       if (id !== null) this.tapLevel(id);

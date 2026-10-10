@@ -11,6 +11,8 @@ export interface MessageData {
   /** Отсчёт до момента (часы клиента, мс) с подписью; без него — просто текст. */
   readonly countdown?: { readonly until: number; readonly label: (time: string) => string };
   readonly button?: { readonly label: string; readonly onClick: () => void };
+  /** Вторая кнопка под основной (например, «Попросить жизнь в чате»). */
+  readonly secondary?: { readonly label: string; readonly onClick: () => void };
 }
 
 const FONT = 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
@@ -20,6 +22,7 @@ export class MessageScene extends Phaser.Scene {
   private countdownText?: Phaser.GameObjects.Text;
   /** Центр кнопки в пикселях canvas — для e2e. */
   buttonCenter: { x: number; y: number } | null = null;
+  secondaryCenter: { x: number; y: number } | null = null;
   private data_!: MessageData;
 
   constructor() {
@@ -28,12 +31,14 @@ export class MessageScene extends Phaser.Scene {
 
   create(data: MessageData): void {
     this.data_ = data;
+    this.buttonCenter = null;
+    this.secondaryCenter = null;
     const { theme, dpr: k } = data;
     const W = this.scale.width;
     const H = this.scale.height;
     this.cameras.main.setBackgroundColor(theme.bg);
     const pw = Math.min(W - 40 * k, 340 * k);
-    const ph = (data.button ? 280 : 200) * k;
+    const ph = (data.button ? (data.secondary ? 336 : 280) : 200) * k;
     const x = (W - pw) / 2;
     const y = (H - ph) / 2;
     this.add.graphics().fillStyle(hexToInt(theme.panel), 1).fillRoundedRect(x, y, pw, ph, 24 * k);
@@ -53,7 +58,7 @@ export class MessageScene extends Phaser.Scene {
     if (data.button) {
       const bw = pw - 48 * k;
       const bh = 46 * k;
-      const cy = y + ph - 40 * k;
+      const cy = y + ph - (data.secondary ? 96 : 40) * k;
       this.add.graphics().fillStyle(hexToInt(theme.button), 1).fillRoundedRect(W / 2 - bw / 2, cy - bh / 2, bw, bh, bh / 2);
       this.add.text(W / 2, cy, data.button.label, {
         fontFamily: FONT, fontSize: `${Math.round(18 * k)}px`, fontStyle: 'bold', color: theme.buttonText,
@@ -61,6 +66,15 @@ export class MessageScene extends Phaser.Scene {
       const click = data.button.onClick;
       this.buttonCenter = { x: W / 2, y: cy };
       this.add.zone(W / 2, cy, bw, bh).setInteractive({ useHandCursor: true }).on('pointerup', click);
+      if (data.secondary) {
+        const sy = y + ph - 40 * k;
+        this.add.graphics().fillStyle(hexToInt(theme.hint), 0.25).fillRoundedRect(W / 2 - bw / 2, sy - bh / 2, bw, bh, bh / 2);
+        this.add.text(W / 2, sy, data.secondary.label, {
+          fontFamily: FONT, fontSize: `${Math.round(16 * k)}px`, fontStyle: 'bold', color: theme.text,
+        }).setOrigin(0.5);
+        this.add.zone(W / 2, sy, bw, bh).setInteractive({ useHandCursor: true }).on('pointerup', data.secondary.onClick);
+        this.secondaryCenter = { x: W / 2, y: sy };
+      }
     }
     (globalThis as Record<string, unknown>).__sakuraMessage = this;
   }
