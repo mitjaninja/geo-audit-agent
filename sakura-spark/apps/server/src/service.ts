@@ -1,10 +1,10 @@
-import { randomInt, randomUUID } from 'node:crypto';
+import { randomBytes, randomInt, randomUUID } from 'node:crypto';
 import { assistForLossStreak, gameOptionsFromLevel, Match3Game } from '@sakura/core';
 import type { LevelDef, Swap } from '@sakura/core';
 import type { TelegramUser } from './auth.ts';
 import { canPlay, fullLives, refund, spend, view } from './lives.ts';
 import type { LivesView } from './lives.ts';
-import type { AttemptRow, LevelProgress, Store, UserRow } from './store.ts';
+import type { AttemptRow, LevelProgress, RoomMode, RoomRow, Store, UserRow } from './store.ts';
 
 /** События, которые может прислать клиент. Игровые итоги пишет только сервер — по реплею. */
 export const CLIENT_EVENTS: ReadonlySet<string> = new Set(['session_start', 'session_end', 'hint_shown', 'tutorial_complete']);
@@ -22,9 +22,43 @@ function goalProgress(game: Match3Game): number {
 export const TIME_GRACE_MS = 15_000;
 export const MAX_SWAPS = 600;
 
+/** Чат-режимы (PRD, «Игра в любом чате»). */
+export const ROOM_TTL_MS = 24 * 3600_000;
+/** PRD: «лимит 5 карточек в день» против спама в чатах. */
+export const MAX_ROOM_CARDS_PER_DAY = 5;
+/** PRD: «Помощь жизнью — до 5 подарков». */
+export const MAX_GIFTS = 5;
+/** Ход в рейтинговой комнате не может быть быстрее анимаций: быстрее — значит скрипт. */
+export const MIN_MS_PER_MOVE = 250;
+export const ROOM_TOP = 5;
+
+/** Короткий id комнаты для ссылок startapp/start: «r» + 10 символов base62. */
+function newRoomId(): string {
+  const abc = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  return `r${[...randomBytes(10)].map((b) => abc[b % abc.length]).join('')}`;
+}
+
+export interface RoomView {
+  readonly id: string;
+  readonly mode: RoomMode;
+  readonly levelId: number;
+  readonly creatorName: string;
+  readonly expiresAt: number;
+  readonly expired: boolean;
+  readonly players: number;
+  readonly top: { readonly place: number; readonly name: string; readonly score: number; readonly stars: number }[];
+  readonly me: { readonly place: number | null; readonly bestScore: number | null; readonly attempts: number };
+  /** PRD: первая попытка в челлендже бесплатна, каждая следующая стоит жизнь. */
+  readonly nextAttemptFree: boolean;
+  readonly gifts: number;
+  readonly maxGifts: number;
+  readonly serverTime: number;
+}
+
 export class ServiceError extends Error {
   constructor(
-    readonly code: 'unknown_level' | 'level_locked' | 'no_lives' | 'not_found' | 'not_open' | 'invalid_replay' | 'bad_request',
+    readonly code: 'unknown_level' | 'level_locked' | 'no_lives' | 'not_found' | 'not_open' | 'invalid_replay' | 'bad_request'
+      | 'room_limit' | 'room_expired',
     readonly status: number,
     readonly details: Record<string, unknown> = {},
   ) {
@@ -46,6 +80,7 @@ export interface StartResponse {
   readonly seed: number;
   readonly level: LevelDef;
   readonly lives: LivesView;
+  readonly roomId?: string;
 }
 
 export interface FinishResponse {
@@ -55,6 +90,8 @@ export interface FinishResponse {
   readonly bestScore: number;
   readonly lives: LivesView;
   readonly maxLevel: number;
+  /** Для попытки в комнате: место в рейтинге чата. */
+  readonly room?: { readonly id: string; readonly place: number; readonly players: number };
 }
 
 export interface ServiceDeps {
@@ -63,6 +100,9 @@ export interface ServiceDeps {
   readonly now?: () => number;
   readonly newSeed?: () => number;
   readonly newId?: () => string;
+  readonly newRoomId?: () => string;
+  /** Рейтинг или подарки комнаты изменились — бот обновит карточку в чате. */
+  readonly onRoomChanged?: (roomId: string) => void;
 }
 
 const emptyProgress = (levelId: number): LevelProgress => ({ levelId, bestScore: 0, stars: 0, wins: 0, losses: 0, lossStreak: 0 });
@@ -77,6 +117,8 @@ export class GameService {
   private readonly now: () => number;
   private readonly newSeed: () => number;
   private readonly newId: () => string;
+  private readonly newRoomId: () => string;
+  private readonly onRoomChanged: (roomId: string) => void;
 
   constructor(deps: ServiceDeps) {
     this.store = deps.store;
@@ -84,6 +126,8 @@ export class GameService {
     this.now = deps.now ?? Date.now;
     this.newSeed = deps.newSeed ?? (() => randomInt(2 ** 31));
     this.newId = deps.newId ?? randomUUID;
+    this.newRoomId = deps.newRoomId ?? newRoomId;
+    this.onRoomChanged = deps.onRoomChanged ?? (() => {});
   }
 
   async login(u: TelegramUser): Promise<UserRow> {
@@ -154,7 +198,7 @@ export class GameService {
     const attempt = {
       id: this.newId(), userId, levelId, seed: this.newSeed(),
       // PRD: после 5+ поражений подряд — скрытое облегчение
-      assist: assistForLossStreak(progress.lossStreak), startedAt: now,
+      assist: assistForLossStreak(progress.lossStreak), startedAt: now, roomId: null,
     };
     await this.store.createAttempt(attempt, lives);
     await this.track(userId, 'level_start', levelId, { attemptId: attempt.id, assist: attempt.assist });
@@ -182,6 +226,8 @@ export class GameService {
       await this.closeAsLoss(attempt, 'rejected', parsed, false);
       throw new ServiceError('invalid_replay', 400);
     }
+
+    if (attempt.roomId) return this.finishRoomAttempt(attempt, game, parsed);
 
     const now = this.now();
     // уровень на время идёт до конца таймера: итог решается при timeUp (клиент присылает ходы, когда время вышло)
@@ -212,6 +258,119 @@ export class GameService {
     return { result: 'won', score: game.score, stars: game.stars, bestScore: progress.bestScore, lives: view(lives, now), maxLevel };
   }
 
+  // ---------- чат-режимы ----------
+
+  /** Создать комнату: челлендж (общий уровень и сид на 24 ч) или просьбу о жизни. Лимит 5 карточек в день. */
+  async createRoom(userId: number, mode: RoomMode): Promise<RoomRow> {
+    const user = (await this.store.getUser(userId))!;
+    const now = this.now();
+    if (await this.store.countActiveRooms(userId, now - 24 * 3600_000) >= MAX_ROOM_CARDS_PER_DAY) {
+      throw new ServiceError('room_limit', 429, { limit: MAX_ROOM_CARDS_PER_DAY });
+    }
+    await this.store.pruneRooms(now);
+    const seed = this.newSeed();
+    const pool = roomLevelPool(this.levels, user.maxLevel);
+    const room: RoomRow = {
+      id: this.newRoomId(), mode, creatorId: userId, creatorName: user.firstName,
+      levelId: mode === 'challenge' ? pool[seed % pool.length] ?? 1 : 1, seed,
+      createdAt: now, expiresAt: now + ROOM_TTL_MS, inlineMessageId: null, gifts: 0,
+    };
+    await this.store.createRoom(room);
+    await this.track(userId, 'room_create', room.levelId, { roomId: room.id, mode });
+    return room;
+  }
+
+  getRoom(id: string): Promise<RoomRow | null> {
+    return this.store.getRoom(id);
+  }
+
+  async setRoomMessage(roomId: string, inlineMessageId: string): Promise<void> {
+    await this.store.setRoomMessage(roomId, inlineMessageId);
+  }
+
+  async roomView(roomId: string, userId: number | null): Promise<RoomView> {
+    const room = await this.store.getRoom(roomId);
+    if (!room) throw new ServiceError('not_found', 404);
+    const results = await this.store.getRoomResults(roomId);
+    const now = this.now();
+    const mine = userId === null ? -1 : results.findIndex((r) => r.userId === userId);
+    const attempts = userId === null ? 0 : await this.store.countRoomAttempts(roomId, userId);
+    return {
+      id: room.id, mode: room.mode, levelId: room.levelId, creatorName: room.creatorName,
+      expiresAt: room.expiresAt, expired: now >= room.expiresAt, players: results.length,
+      top: results.slice(0, ROOM_TOP).map((r, i) => ({ place: i + 1, name: r.firstName, score: r.bestScore, stars: r.stars })),
+      me: { place: mine >= 0 ? mine + 1 : null, bestScore: mine >= 0 ? results[mine]!.bestScore : null, attempts },
+      nextAttemptFree: attempts === 0, gifts: room.gifts, maxGifts: MAX_GIFTS, serverTime: now,
+    };
+  }
+
+  /** Попытка в челлендже: тот же уровень и сид, что у всех; первая бесплатна, дальше — жизнь. */
+  async startRoomAttempt(userId: number, roomId: string): Promise<StartResponse> {
+    const room = await this.store.getRoom(roomId);
+    if (!room || room.mode !== 'challenge') throw new ServiceError('not_found', 404);
+    const now = this.now();
+    if (now >= room.expiresAt) throw new ServiceError('room_expired', 410);
+    const open = await this.store.getOpenAttempt(userId);
+    if (open) await this.closeAsLoss(open, 'abandoned', []);
+    const user = (await this.store.getUser(userId))!;
+    const free = (await this.store.countRoomAttempts(roomId, userId)) === 0;
+    if (!free && !canPlay(user.lives, now)) {
+      await this.track(userId, 'lives_empty', room.levelId, { roomId, nextLifeAt: view(user.lives, now).nextLifeAt });
+      throw new ServiceError('no_lives', 409, { lives: view(user.lives, now) });
+    }
+    const lives = free ? user.lives : spend(user.lives, now);
+    // облегчение в комнате не даём: у всех должно быть одинаковое выпадение фишек
+    const attempt = { id: this.newId(), userId, levelId: room.levelId, seed: room.seed, assist: 0, startedAt: now, roomId };
+    await this.store.createAttempt(attempt, lives);
+    await this.track(userId, 'room_start', room.levelId, { roomId, attemptId: attempt.id, free });
+    return { attemptId: attempt.id, seed: room.seed, level: this.levels.get(room.levelId)!, lives: view(lives, now), roomId };
+  }
+
+  private async finishRoomAttempt(attempt: AttemptRow, game: Match3Game, swaps: readonly Swap[]): Promise<FinishResponse> {
+    const now = this.now();
+    // рейтинг честный: ходы быстрее анимаций — скрипт, результат не засчитываем
+    if (swaps.length > 0 && now - attempt.startedAt < swaps.length * MIN_MS_PER_MOVE) {
+      await this.closeAsLoss(attempt, 'rejected', swaps, false);
+      throw new ServiceError('invalid_replay', 400, { reason: 'too_fast' });
+    }
+    const user = (await this.store.getUser(attempt.userId))!;
+    const won = game.status === 'won';
+    await this.store.recordRoomResult(attempt.roomId!, {
+      userId: user.id, firstName: user.firstName, bestScore: game.score, stars: game.stars, won,
+    }, now);
+    await this.store.closeAttempt(attempt.id, user.id, {
+      status: won ? 'won' : 'lost', finishedAt: now, score: game.score, stars: game.stars, swaps,
+      lives: user.lives, progress: null, maxLevel: user.maxLevel,
+    });
+    await this.track(user.id, 'room_finish', attempt.levelId, {
+      roomId: attempt.roomId, attemptId: attempt.id, score: game.score, stars: game.stars, won, movesLeft: game.movesLeft,
+    });
+    const results = await this.store.getRoomResults(attempt.roomId!);
+    const place = results.findIndex((r) => r.userId === user.id) + 1;
+    this.onRoomChanged(attempt.roomId!);
+    return {
+      result: won ? 'won' : 'lost', score: game.score, stars: game.stars, bestScore: results[place - 1]?.bestScore ?? game.score,
+      lives: view(user.lives, now), maxLevel: user.maxLevel, room: { id: attempt.roomId!, place, players: results.length },
+    };
+  }
+
+  /** «Подарить жизнь» в карточке просьбы: +1 жизнь просящему, каждый дарит один раз, до 5 подарков. */
+  async giftLife(roomId: string, giver: TelegramUser): Promise<{ status: 'ok' | 'already' | 'full' | 'own' | 'expired' | 'not_found'; gifts: number }> {
+    const room = await this.store.getRoom(roomId);
+    if (!room || room.mode !== 'help') return { status: 'not_found', gifts: 0 };
+    const now = this.now();
+    if (now >= room.expiresAt) return { status: 'expired', gifts: room.gifts };
+    if (giver.id === room.creatorId) return { status: 'own', gifts: room.gifts };
+    await this.login(giver);
+    const status = await this.store.addGift(roomId, giver.id, now, MAX_GIFTS, (l) => refund(l, now));
+    const gifts = (await this.store.getRoom(roomId))!.gifts;
+    if (status === 'ok') {
+      await this.track(giver.id, 'life_gift', null, { roomId, to: room.creatorId });
+      this.onRoomChanged(roomId);
+    }
+    return { status, gifts };
+  }
+
   private optionsFor(a: AttemptRow, level: LevelDef) {
     const opts = gameOptionsFromLevel(level, a.seed);
     return a.assist > 0 ? { ...opts, assist: a.assist } : opts;
@@ -224,18 +383,26 @@ export class GameService {
     const now = this.now();
     const user = (await this.store.getUser(attempt.userId))!;
     const prev = (await this.store.getLevelProgress(attempt.userId, attempt.levelId)) ?? emptyProgress(attempt.levelId);
-    const progress = countsAsLoss ? { ...prev, losses: prev.losses + 1, lossStreak: prev.lossStreak + 1 } : null;
+    // попытка в комнате не влияет на прогресс карты и серию поражений уровня
+    const progress = countsAsLoss && !attempt.roomId ? { ...prev, losses: prev.losses + 1, lossStreak: prev.lossStreak + 1 } : null;
     await this.store.closeAttempt(attempt.id, attempt.userId, {
       status, finishedAt: now, score, stars: 0, swaps, lives: user.lives, progress, maxLevel: user.maxLevel,
     });
     // PRD: level_fail — с оставшимися ходами и прогрессом цели
-    await this.track(attempt.userId, 'level_fail', attempt.levelId, {
+    await this.track(attempt.userId, attempt.roomId ? 'room_fail' : 'level_fail', attempt.levelId, {
+      ...(attempt.roomId ? { roomId: attempt.roomId } : {}),
       attemptId: attempt.id, reason: status, score, movesUsed: swaps.length,
       movesLeft: game ? game.movesLeft : null, goalProgress: game ? Math.round(goalProgress(game) * 100) / 100 : null,
       assist: attempt.assist,
     });
     return { result: 'lost', score, stars: 0, bestScore: prev.bestScore, lives: view(user.lives, now), maxLevel: user.maxLevel };
   }
+}
+
+/** Уровни для челленджа: без таймера, не обучающий первый, в пределах пройденного создателем (но не меньше 2–4). */
+export function roomLevelPool(levels: ReadonlyMap<number, LevelDef>, creatorMaxLevel: number): number[] {
+  const top = Math.max(4, Math.min(creatorMaxLevel, 15));
+  return [...levels.values()].filter((l) => l.id >= 2 && l.id <= top && l.timeLimit === undefined).map((l) => l.id).sort((a, b) => a - b);
 }
 
 /** Ходы от клиента: массив { a: {row, col}, b: {row, col} } с целыми координатами. */

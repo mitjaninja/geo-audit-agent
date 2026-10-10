@@ -24,6 +24,31 @@ export interface LevelProgress {
   readonly lossStreak: number;
 }
 
+export type RoomMode = 'challenge' | 'help';
+
+export interface RoomRow {
+  readonly id: string;
+  readonly mode: RoomMode;
+  readonly creatorId: number;
+  readonly creatorName: string;
+  readonly levelId: number;
+  readonly seed: number;
+  readonly createdAt: number;
+  readonly expiresAt: number;
+  /** Карточка в чате: её редактирует бот (рейтинг, подарки). null — пока неизвестна. */
+  readonly inlineMessageId: string | null;
+  readonly gifts: number;
+}
+
+export interface RoomResult {
+  readonly userId: number;
+  readonly firstName: string;
+  readonly bestScore: number;
+  readonly stars: number;
+  readonly won: boolean;
+  readonly attempts: number;
+}
+
 export type AttemptStatus = 'open' | 'won' | 'lost' | 'abandoned' | 'rejected';
 
 export interface AttemptRow {
@@ -37,6 +62,8 @@ export interface AttemptRow {
   readonly finishedAt: number | null;
   readonly score: number | null;
   readonly stars: number | null;
+  /** Попытка в комнате чат-режима; null — обычный уровень карты. */
+  readonly roomId: string | null;
 }
 
 export interface AttemptClose {
@@ -95,6 +122,21 @@ export interface Store {
   getAttempt(id: string): Promise<AttemptRow | null>;
   /** Создать попытку и списать жизнь одной транзакцией. */
   createAttempt(a: Omit<AttemptRow, 'status' | 'finishedAt' | 'score' | 'stars'>, lives: LivesState): Promise<void>;
+  createRoom(room: RoomRow): Promise<void>;
+  getRoom(id: string): Promise<RoomRow | null>;
+  setRoomMessage(id: string, inlineMessageId: string): Promise<void>;
+  /** Комнаты, «ушедшие в чат» (есть карточка или игроки) — для лимита 5 карточек в день. */
+  countActiveRooms(creatorId: number, since: number): Promise<number>;
+  countRoomAttempts(roomId: string, userId: number): Promise<number>;
+  recordRoomResult(roomId: string, r: Omit<RoomResult, 'attempts'>, now: number): Promise<void>;
+  getRoomResults(roomId: string): Promise<RoomResult[]>;
+  /**
+   * Подарок жизни в карточке «Помощь жизнью»: атомарно проверяет, что даритель ещё не дарил
+   * и лимит не исчерпан, и меняет жизни просящего функцией giveLife.
+   */
+  addGift(roomId: string, giverId: number, now: number, maxGifts: number, giveLife: (l: LivesState) => LivesState): Promise<'ok' | 'already' | 'full'>;
+  /** Удалить истёкшие комнаты, в которые никто не играл. */
+  pruneRooms(now: number): Promise<number>;
   /** Закрыть попытку, если она ещё открыта. false — уже закрыта (повторный запрос). */
   closeAttempt(id: string, userId: number, c: AttemptClose): Promise<boolean>;
   addEvents(events: readonly EventRow[]): Promise<void>;
@@ -150,6 +192,44 @@ CREATE INDEX IF NOT EXISTS events_name_ts ON events (name, ts);
 CREATE INDEX IF NOT EXISTS events_user_ts ON events (user_id, ts);
 `;
 
+/** Миграции схемы по порядку; индекс + 1 = PRAGMA user_version после неё. Только дописывать в конец. */
+const MIGRATIONS: readonly string[] = [
+  SCHEMA,
+  // v2: чат-режимы — комнаты (общий уровень и сид), их результаты, подарки жизни
+  `ALTER TABLE attempts ADD COLUMN room_id TEXT;
+  CREATE TABLE rooms (
+    id TEXT PRIMARY KEY,
+    mode TEXT NOT NULL,
+    creator_id INTEGER NOT NULL,
+    creator_name TEXT NOT NULL,
+    level_id INTEGER NOT NULL,
+    seed INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    inline_message_id TEXT,
+    gifts INTEGER NOT NULL DEFAULT 0
+  );
+  CREATE INDEX rooms_creator ON rooms (creator_id, created_at);
+  CREATE TABLE room_results (
+    room_id TEXT NOT NULL,
+    user_id INTEGER NOT NULL,
+    first_name TEXT NOT NULL,
+    best_score INTEGER NOT NULL,
+    stars INTEGER NOT NULL,
+    won INTEGER NOT NULL,
+    attempts INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (room_id, user_id)
+  );
+  CREATE TABLE room_gifts (
+    room_id TEXT NOT NULL,
+    giver_id INTEGER NOT NULL,
+    ts INTEGER NOT NULL,
+    PRIMARY KEY (room_id, giver_id)
+  );
+  CREATE INDEX attempts_room_user ON attempts (room_id, user_id);`,
+];
+
 type Row = Record<string, unknown>;
 
 const toUser = (r: Row): UserRow => ({
@@ -182,6 +262,20 @@ const toAttempt = (r: Row): AttemptRow => ({
   finishedAt: r.finished_at === null ? null : Number(r.finished_at),
   score: r.score === null ? null : Number(r.score),
   stars: r.stars === null ? null : Number(r.stars),
+  roomId: (r.room_id as string | null | undefined) ?? null,
+});
+
+const toRoom = (r: Row): RoomRow => ({
+  id: String(r.id),
+  mode: r.mode as RoomMode,
+  creatorId: Number(r.creator_id),
+  creatorName: String(r.creator_name),
+  levelId: Number(r.level_id),
+  seed: Number(r.seed),
+  createdAt: Number(r.created_at),
+  expiresAt: Number(r.expires_at),
+  inlineMessageId: (r.inline_message_id as string | null) ?? null,
+  gifts: Number(r.gifts),
 });
 
 export class SqliteStore implements Store {
@@ -191,7 +285,25 @@ export class SqliteStore implements Store {
   constructor(path: string) {
     this.db = new DatabaseSync(path);
     this.db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
-    this.db.exec(SCHEMA);
+    this.migrate();
+  }
+
+  /**
+   * Миграции по PRAGMA user_version: база на хостинге живая, CREATE IF NOT EXISTS не добавит колонку.
+   * Каждая миграция — одна транзакция; первая идемпотентна (базы до миграций уже содержат её таблицы).
+   */
+  private migrate(): void {
+    const version = Number((this.db.prepare('PRAGMA user_version').get() as Row).user_version);
+    MIGRATIONS.slice(version).forEach((sql, i) => {
+      this.tx(() => {
+        this.db.exec(sql);
+        this.db.exec(`PRAGMA user_version = ${version + i + 1}`);
+      });
+    });
+  }
+
+  get schemaVersion(): number {
+    return Number((this.db.prepare('PRAGMA user_version').get() as Row).user_version);
   }
 
   private tx<T>(fn: () => T): T {
@@ -249,8 +361,8 @@ export class SqliteStore implements Store {
 
   async createAttempt(a: Omit<AttemptRow, 'status' | 'finishedAt' | 'score' | 'stars'>, lives: LivesState): Promise<void> {
     this.tx(() => {
-      this.db.prepare("INSERT INTO attempts (id, user_id, level_id, seed, assist, started_at, status) VALUES (?, ?, ?, ?, ?, ?, 'open')")
-        .run(a.id, a.userId, a.levelId, a.seed, a.assist, a.startedAt);
+      this.db.prepare("INSERT INTO attempts (id, user_id, level_id, seed, assist, started_at, status, room_id) VALUES (?, ?, ?, ?, ?, ?, 'open', ?)")
+        .run(a.id, a.userId, a.levelId, a.seed, a.assist, a.startedAt, a.roomId);
       this.db.prepare('UPDATE users SET lives = ?, lives_updated_at = ?, infinite_until = ? WHERE id = ?')
         .run(lives.lives, lives.updatedAt, lives.infiniteUntil, a.userId);
     });
@@ -276,6 +388,79 @@ export class SqliteStore implements Store {
       }
       return true;
     });
+  }
+
+  async createRoom(r: RoomRow): Promise<void> {
+    this.db.prepare(`INSERT INTO rooms (id, mode, creator_id, creator_name, level_id, seed, created_at, expires_at, inline_message_id, gifts)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(r.id, r.mode, r.creatorId, r.creatorName, r.levelId, r.seed, r.createdAt, r.expiresAt, r.inlineMessageId, r.gifts);
+  }
+
+  async getRoom(id: string): Promise<RoomRow | null> {
+    const r = this.db.prepare('SELECT * FROM rooms WHERE id = ?').get(id) as Row | undefined;
+    return r ? toRoom(r) : null;
+  }
+
+  async setRoomMessage(id: string, inlineMessageId: string): Promise<void> {
+    this.db.prepare('UPDATE rooms SET inline_message_id = ? WHERE id = ? AND inline_message_id IS NULL').run(inlineMessageId, id);
+  }
+
+  async countActiveRooms(creatorId: number, since: number): Promise<number> {
+    const r = this.db.prepare(`SELECT COUNT(*) AS n FROM rooms r WHERE r.creator_id = ? AND r.created_at >= ?
+      AND (r.inline_message_id IS NOT NULL OR EXISTS (SELECT 1 FROM room_results x WHERE x.room_id = r.id))`).get(creatorId, since) as Row;
+    return Number(r.n);
+  }
+
+  async countRoomAttempts(roomId: string, userId: number): Promise<number> {
+    const r = this.db.prepare('SELECT COUNT(*) AS n FROM attempts WHERE room_id = ? AND user_id = ?').get(roomId, userId) as Row;
+    return Number(r.n);
+  }
+
+  async recordRoomResult(roomId: string, x: Omit<RoomResult, 'attempts'>, now: number): Promise<void> {
+    this.db.prepare(`
+      INSERT INTO room_results (room_id, user_id, first_name, best_score, stars, won, attempts, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, 1, ?)
+      ON CONFLICT (room_id, user_id) DO UPDATE SET
+        first_name = excluded.first_name,
+        best_score = MAX(best_score, excluded.best_score),
+        stars = MAX(stars, excluded.stars),
+        won = MAX(won, excluded.won),
+        attempts = attempts + 1,
+        updated_at = excluded.updated_at
+    `).run(roomId, x.userId, x.firstName, x.bestScore, x.stars, x.won ? 1 : 0, now);
+  }
+
+  async getRoomResults(roomId: string): Promise<RoomResult[]> {
+    // при равных очках выше тот, кто набрал их раньше
+    return (this.db.prepare('SELECT * FROM room_results WHERE room_id = ? ORDER BY best_score DESC, updated_at ASC').all(roomId) as Row[])
+      .map((r) => ({
+        userId: Number(r.user_id), firstName: String(r.first_name), bestScore: Number(r.best_score),
+        stars: Number(r.stars), won: Number(r.won) === 1, attempts: Number(r.attempts),
+      }));
+  }
+
+  async addGift(roomId: string, giverId: number, now: number, maxGifts: number, giveLife: (l: LivesState) => LivesState): Promise<'ok' | 'already' | 'full'> {
+    return this.tx(() => {
+      const room = this.db.prepare('SELECT * FROM rooms WHERE id = ?').get(roomId) as Row | undefined;
+      if (!room) return 'full';
+      if (this.db.prepare('SELECT 1 FROM room_gifts WHERE room_id = ? AND giver_id = ?').get(roomId, giverId)) return 'already';
+      if (Number(room.gifts) >= maxGifts) return 'full';
+      this.db.prepare('INSERT INTO room_gifts (room_id, giver_id, ts) VALUES (?, ?, ?)').run(roomId, giverId, now);
+      this.db.prepare('UPDATE rooms SET gifts = gifts + 1 WHERE id = ?').run(roomId);
+      const u = this.db.prepare('SELECT * FROM users WHERE id = ?').get(Number(room.creator_id)) as Row | undefined;
+      if (u) {
+        const l = giveLife(toUser(u).lives);
+        this.db.prepare('UPDATE users SET lives = ?, lives_updated_at = ?, infinite_until = ? WHERE id = ?')
+          .run(l.lives, l.updatedAt, l.infiniteUntil, Number(room.creator_id));
+      }
+      return 'ok';
+    });
+  }
+
+  async pruneRooms(now: number): Promise<number> {
+    const res = this.db.prepare(`DELETE FROM rooms WHERE expires_at < ? AND inline_message_id IS NULL
+      AND NOT EXISTS (SELECT 1 FROM room_results x WHERE x.room_id = rooms.id)`).run(now);
+    return Number(res.changes);
   }
 
   async addEvents(events: readonly EventRow[]): Promise<void> {

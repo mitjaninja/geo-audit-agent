@@ -5,8 +5,8 @@ import { extname, join, resolve, sep } from 'node:path';
 import { timingSafeEqual } from 'node:crypto';
 import { validateInitData } from './auth.ts';
 import type { TelegramUser } from './auth.ts';
-import { handleUpdate, webhookToken } from './bot.ts';
-import type { BotApi } from './bot.ts';
+import { webhookToken } from './bot.ts';
+import type { ChatBot } from './chat.ts';
 import { ServiceError } from './service.ts';
 import type { GameService } from './service.ts';
 
@@ -15,7 +15,7 @@ export interface HttpDeps {
   readonly botToken: string;
   readonly devAuth: boolean;
   readonly clientDir?: string;
-  readonly bot?: { readonly api: BotApi; readonly webAppUrl: string; readonly secret: string };
+  readonly bot?: { readonly chat: ChatBot; readonly secret: string };
   readonly now?: () => number;
   readonly log?: (msg: string) => void;
 }
@@ -86,7 +86,7 @@ export function createApp(deps: HttpDeps): Server {
       if (!deps.bot || !deps.bot.secret || !safeEqual(secret, webhookToken(deps.bot.secret))) throw new HttpError(401, 'unauthorized');
       const update = await readJson(req);
       // Telegram ждёт быстрый 200; ошибку бота логируем, но апдейт не переотправляем
-      handleUpdate(update, deps.bot.api, deps.bot.webAppUrl).catch((e) => log(`bot: ${String(e)}`));
+      deps.bot.chat.handleUpdate(update).catch((e) => log(`bot: ${String(e)}`));
       return send(res, 200, { ok: true });
     }
 
@@ -102,6 +102,17 @@ export function createApp(deps: HttpDeps): Server {
       const body = await readJson(req);
       return send(res, 200, { accepted: await deps.service.clientEvents(user.id, body.events) });
     }
+    if (method === 'POST' && path === '/api/rooms') {
+      const { mode } = await readJson(req);
+      if (mode !== 'challenge' && mode !== 'help') throw new HttpError(400, 'bad_request');
+      const room = await deps.service.createRoom(user.id, mode);
+      // карточку для shareMessage готовит бот; без бота (разработка) — только ссылка
+      const preparedMessageId = deps.bot ? await deps.bot.chat.prepare(room, user.id) : null;
+      return send(res, 200, { roomId: room.id, mode, levelId: room.levelId, preparedMessageId, link: deps.bot?.chat.link(room.id) ?? null });
+    }
+    const roomPath = /^\/api\/rooms\/(r[A-Za-z0-9]{1,32})(\/attempts)?$/.exec(path);
+    if (roomPath && method === 'GET' && !roomPath[2]) return send(res, 200, await deps.service.roomView(roomPath[1]!, user.id));
+    if (roomPath && method === 'POST' && roomPath[2]) return send(res, 200, await deps.service.startRoomAttempt(user.id, roomPath[1]!));
     const finish = /^\/api\/attempts\/([\w-]{1,64})\/finish$/.exec(path);
     if (method === 'POST' && finish) {
       const body = await readJson(req);

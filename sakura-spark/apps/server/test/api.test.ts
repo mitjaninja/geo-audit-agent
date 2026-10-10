@@ -8,6 +8,7 @@ import { gameOptionsFromLevel, Match3Game, parseLevel } from '@sakura/core';
 import type { LevelDef, Swap } from '@sakura/core';
 import { signInitData } from '../src/auth.ts';
 import { BotApi, webhookToken } from '../src/bot.ts';
+import { ChatBot } from '../src/chat.ts';
 import { createApp } from '../src/http.ts';
 import { loadLevels } from '../src/levels.ts';
 import { LIFE_REGEN_MS } from '../src/lives.ts';
@@ -25,6 +26,8 @@ const LEVELS = new Map<number, LevelDef>([
 ]);
 
 let clock = 1_760_000_000_000;
+/** Сервис и бот текущего теста (пересоздаются в beforeEach). */
+const ctx = {} as { service: GameService; chat: ChatBot };
 let store: SqliteStore;
 let url: string;
 let server: ReturnType<typeof createApp>;
@@ -35,8 +38,10 @@ writeFileSync(join(clientDir, 'index.html'), '<!doctype html><title>Sakura</titl
 writeFileSync(join(clientDir, 'assets', 'app-123.js'), 'console.log(1)');
 
 const fakeFetch = (async (input: string | URL | Request, init?: RequestInit) => {
-  botCalls.push({ method: String(input).split('/').pop()!, params: JSON.parse(String(init?.body)) });
-  return new Response(JSON.stringify({ ok: true, result: true }));
+  const method = String(input).split('/').pop()!;
+  botCalls.push({ method, params: JSON.parse(String(init?.body)) });
+  const result = method === 'savePreparedInlineMessage' ? { id: `prep-${botCalls.length}`, expiration_date: 0 } : true;
+  return new Response(JSON.stringify({ ok: true, result }));
 }) as typeof fetch;
 
 beforeEach(async () => {
@@ -44,11 +49,19 @@ beforeEach(async () => {
   server?.close();
   store = new SqliteStore(':memory:');
   let seq = 0;
-  const service = new GameService({ store, levels: LEVELS, now: () => clock, newSeed: () => 1000 + seq, newId: () => `att-${++seq}` });
-  server = createApp({
-    service, botToken: TOKEN, devAuth: true, clientDir, now: () => clock,
-    bot: { api: new BotApi(TOKEN, fakeFetch), webAppUrl: 'https://game.example/', secret: SECRET },
+  let chat: ChatBot | null = null;
+  let roomSeq = 0;
+  const service = new GameService({
+    store, levels: LEVELS, now: () => clock, newSeed: () => 1000 + seq, newId: () => `att-${++seq}`,
+    newRoomId: () => `rRoom${++roomSeq}`, onRoomChanged: (id) => void chat?.refresh(id),
   });
+  chat = new ChatBot({
+    api: new BotApi(TOKEN, fakeFetch), service, webAppUrl: 'https://game.example/', botUsername: 'sakura_test_bot',
+    directLinks: false, refreshDelayMs: 0, now: () => clock,
+  });
+  ctx.service = service;
+  ctx.chat = chat;
+  server = createApp({ service, botToken: TOKEN, devAuth: true, clientDir, now: () => clock, bot: { chat, secret: SECRET } });
   await new Promise<void>((r) => server.listen(0, r));
   url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   botCalls.length = 0;

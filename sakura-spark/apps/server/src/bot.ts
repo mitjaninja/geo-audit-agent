@@ -35,25 +35,6 @@ export const BOT_TEXT = {
   play: 'Играть',
 } as const;
 
-interface Update {
-  message?: { chat: { id: number; type: string }; from?: { first_name?: string }; text?: string };
-}
-
-/**
- * Обработка апдейта. Сейчас только /start в личке: приветствие и кнопка web_app.
- * Inline-режим и карточки для чатов — этап 9.
- */
-export async function handleUpdate(update: unknown, api: BotApi, webAppUrl: string): Promise<void> {
-  const msg = (update as Update).message;
-  if (!msg?.text || msg.chat.type !== 'private') return;
-  if (!/^\/start(\s|$|@)/.test(msg.text)) return;
-  await api.call('sendMessage', {
-    chat_id: msg.chat.id,
-    text: BOT_TEXT.start(msg.from?.first_name ?? 'путник'),
-    reply_markup: { inline_keyboard: [[{ text: BOT_TEXT.play, web_app: { url: webAppUrl } }]] },
-  });
-}
-
 /**
  * Токен для заголовка X-Telegram-Bot-Api-Secret-Token. Telegram разрешает в нём только A-Z, a-z, 0-9, _ и -,
  * а хостинги генерируют секреты с + / = — поэтому в Telegram уходит SHA-256 секрета в hex.
