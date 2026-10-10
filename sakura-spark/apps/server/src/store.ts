@@ -1,7 +1,9 @@
 import { DatabaseSync } from 'node:sqlite';
-import type { Swap } from '@sakura/core';
+import type { Move } from '@sakura/core';
 import type { TelegramUser } from './auth.ts';
 import type { LivesState } from './lives.ts';
+import { ITEMS } from './economy.ts';
+import type { Item, ProductId } from './economy.ts';
 
 export interface UserRow {
   readonly id: number;
@@ -47,6 +49,37 @@ export interface RoomResult {
   readonly stars: number;
   readonly won: boolean;
   readonly attempts: number;
+  /** Счёт поставлен с бустерами — в рейтинге чата помечается значком. */
+  readonly boosted: boolean;
+}
+
+/** Кошелёк игрока: всё, что меняется покупками и тратами, — читается и пишется одной транзакцией. */
+export interface Wallet {
+  readonly crystals: number;
+  readonly piggy: number;
+  readonly items: Readonly<Record<Item, number>>;
+  readonly starterUntil: number;
+  readonly starterBought: boolean;
+  readonly lives: LivesState;
+}
+
+/** Новые значения кошелька (абсолютные); items — только изменённые предметы. */
+export interface WalletUpdate {
+  readonly crystals?: number;
+  readonly piggy?: number;
+  readonly items?: Partial<Record<Item, number>>;
+  readonly starterUntil?: number;
+  readonly starterBought?: boolean;
+  readonly lives?: LivesState;
+}
+
+export interface InvoiceRow {
+  readonly id: string;
+  readonly userId: number;
+  readonly product: ProductId;
+  readonly stars: number;
+  readonly createdAt: number;
+  readonly paidAt: number | null;
 }
 
 export type AttemptStatus = 'open' | 'won' | 'lost' | 'abandoned' | 'rejected';
@@ -64,6 +97,10 @@ export interface AttemptRow {
   readonly stars: number | null;
   /** Попытка в комнате чат-режима; null — обычный уровень карты. */
   readonly roomId: string | null;
+  /** Бустеры перед уровнем, оплаченные при старте. */
+  readonly startBoosters: readonly Item[];
+  /** Сколько раз оплачено «+5 ходов». */
+  readonly extensions: number;
 }
 
 export interface AttemptClose {
@@ -71,7 +108,7 @@ export interface AttemptClose {
   readonly finishedAt: number;
   readonly score: number;
   readonly stars: number;
-  readonly swaps: readonly Swap[];
+  readonly swaps: readonly Move[];
   readonly lives: LivesState;
   /** null — прогресс уровня не меняется (подделанный реплей). */
   readonly progress: LevelProgress | null;
@@ -121,7 +158,23 @@ export interface Store {
   getOpenAttempt(userId: number): Promise<AttemptRow | null>;
   getAttempt(id: string): Promise<AttemptRow | null>;
   /** Создать попытку и списать жизнь одной транзакцией. */
-  createAttempt(a: Omit<AttemptRow, 'status' | 'finishedAt' | 'score' | 'stars'>, lives: LivesState): Promise<void>;
+  createAttempt(a: Omit<AttemptRow, 'status' | 'finishedAt' | 'score' | 'stars' | 'extensions'>, lives: LivesState): Promise<void>;
+  getWallet(userId: number): Promise<Wallet>;
+  /**
+   * Атомарно: прочитать кошелёк, решить (fn), записать. fn вернула null — ничего не меняется
+   * (например, не хватает кристаллов). Возвращает новый кошелёк или null.
+   */
+  transact(userId: number, fn: (w: Wallet) => WalletUpdate | null): Promise<Wallet | null>;
+  /** «+5 ходов»: в одной транзакции проверить, что попытка открыта, и списать цену очередной докупки. */
+  extendAttempt(attemptId: string, userId: number, priceFor: (extensions: number) => number): Promise<{ status: 'ok' | 'no_crystals' | 'not_open'; price: number; wallet: Wallet | null }>;
+  createInvoice(i: Omit<InvoiceRow, 'paidAt'>): Promise<void>;
+  getPayment(chargeId: string): Promise<{ userId: number; product: ProductId; stars: number; refunded: boolean } | null>;
+  getInvoice(id: string): Promise<InvoiceRow | null>;
+  /** Успешный платёж: начислить ровно один раз на charge id (Telegram может прислать апдейт повторно). */
+  recordPayment(p: { chargeId: string; invoiceId: string; userId: number; product: ProductId; stars: number; now: number },
+    grant: (w: Wallet) => WalletUpdate): Promise<'ok' | 'duplicate'>;
+  /** Возврат: пометить платёж и забрать начисленное (кристаллы не уходят ниже нуля). */
+  refundPayment(chargeId: string, now: number, revoke: (w: Wallet, product: ProductId, grantedCrystals: number) => WalletUpdate): Promise<{ status: 'ok' | 'not_found' | 'already'; userId?: number }>;
   createRoom(room: RoomRow): Promise<void>;
   getRoom(id: string): Promise<RoomRow | null>;
   setRoomMessage(id: string, inlineMessageId: string): Promise<void>;
@@ -228,6 +281,27 @@ const MIGRATIONS: readonly string[] = [
     PRIMARY KEY (room_id, giver_id)
   );
   CREATE INDEX attempts_room_user ON attempts (room_id, user_id);`,
+  // v3: экономика — кристаллы, склад бустеров, копилка, стартовый пак, счета и платежи Stars
+  `ALTER TABLE users ADD COLUMN crystals INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE users ADD COLUMN piggy INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE users ADD COLUMN starter_until INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE users ADD COLUMN starter_bought INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE attempts ADD COLUMN start_boosters TEXT;
+  ALTER TABLE attempts ADD COLUMN extensions INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE room_results ADD COLUMN boosted INTEGER NOT NULL DEFAULT 0;
+  CREATE TABLE inventory (user_id INTEGER NOT NULL, item TEXT NOT NULL, count INTEGER NOT NULL, PRIMARY KEY (user_id, item));
+  CREATE TABLE invoices (
+    id TEXT PRIMARY KEY, user_id INTEGER NOT NULL, product TEXT NOT NULL, stars INTEGER NOT NULL,
+    created_at INTEGER NOT NULL, paid_at INTEGER
+  );
+  CREATE TABLE payments (
+    charge_id TEXT PRIMARY KEY, invoice_id TEXT NOT NULL, user_id INTEGER NOT NULL, product TEXT NOT NULL,
+    stars INTEGER NOT NULL, created_at INTEGER NOT NULL, refunded_at INTEGER, granted_crystals INTEGER NOT NULL DEFAULT 0
+  );
+  -- PRD: по 3 бесплатных бустера каждого типа — и тем, кто уже играет
+  INSERT INTO inventory (user_id, item, count)
+    SELECT u.id, b.item, 3 FROM users u, (SELECT 'beamBomb' AS item UNION ALL SELECT 'rainbow' UNION ALL SELECT 'extraMoves'
+      UNION ALL SELECT 'hammer' UNION ALL SELECT 'freeSwap' UNION ALL SELECT 'shuffle') b;`,
 ];
 
 type Row = Record<string, unknown>;
@@ -263,6 +337,8 @@ const toAttempt = (r: Row): AttemptRow => ({
   score: r.score === null ? null : Number(r.score),
   stars: r.stars === null ? null : Number(r.stars),
   roomId: (r.room_id as string | null | undefined) ?? null,
+  startBoosters: r.start_boosters ? (JSON.parse(String(r.start_boosters)) as Item[]) : [],
+  extensions: Number(r.extensions ?? 0),
 });
 
 const toRoom = (r: Row): RoomRow => ({
@@ -361,8 +437,9 @@ export class SqliteStore implements Store {
 
   async createAttempt(a: Omit<AttemptRow, 'status' | 'finishedAt' | 'score' | 'stars'>, lives: LivesState): Promise<void> {
     this.tx(() => {
-      this.db.prepare("INSERT INTO attempts (id, user_id, level_id, seed, assist, started_at, status, room_id) VALUES (?, ?, ?, ?, ?, ?, 'open', ?)")
-        .run(a.id, a.userId, a.levelId, a.seed, a.assist, a.startedAt, a.roomId);
+      this.db.prepare(`INSERT INTO attempts (id, user_id, level_id, seed, assist, started_at, status, room_id, start_boosters)
+        VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?)`)
+        .run(a.id, a.userId, a.levelId, a.seed, a.assist, a.startedAt, a.roomId, a.startBoosters.length > 0 ? JSON.stringify(a.startBoosters) : null);
       this.db.prepare('UPDATE users SET lives = ?, lives_updated_at = ?, infinite_until = ? WHERE id = ?')
         .run(lives.lives, lives.updatedAt, lives.infiniteUntil, a.userId);
     });
@@ -418,16 +495,18 @@ export class SqliteStore implements Store {
 
   async recordRoomResult(roomId: string, x: Omit<RoomResult, 'attempts'>, now: number): Promise<void> {
     this.db.prepare(`
-      INSERT INTO room_results (room_id, user_id, first_name, best_score, stars, won, attempts, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, 1, ?)
+      INSERT INTO room_results (room_id, user_id, first_name, best_score, stars, won, attempts, updated_at, boosted)
+      VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
       ON CONFLICT (room_id, user_id) DO UPDATE SET
         first_name = excluded.first_name,
+        -- значок бустера — у того результата, что стоит в рейтинге (лучшего)
+        boosted = CASE WHEN excluded.best_score > best_score THEN excluded.boosted ELSE boosted END,
         best_score = MAX(best_score, excluded.best_score),
         stars = MAX(stars, excluded.stars),
         won = MAX(won, excluded.won),
         attempts = attempts + 1,
         updated_at = excluded.updated_at
-    `).run(roomId, x.userId, x.firstName, x.bestScore, x.stars, x.won ? 1 : 0, now);
+    `).run(roomId, x.userId, x.firstName, x.bestScore, x.stars, x.won ? 1 : 0, now, x.boosted ? 1 : 0);
   }
 
   async getRoomResults(roomId: string): Promise<RoomResult[]> {
@@ -435,7 +514,7 @@ export class SqliteStore implements Store {
     return (this.db.prepare('SELECT * FROM room_results WHERE room_id = ? ORDER BY best_score DESC, updated_at ASC').all(roomId) as Row[])
       .map((r) => ({
         userId: Number(r.user_id), firstName: String(r.first_name), bestScore: Number(r.best_score),
-        stars: Number(r.stars), won: Number(r.won) === 1, attempts: Number(r.attempts),
+        stars: Number(r.stars), won: Number(r.won) === 1, attempts: Number(r.attempts), boosted: Number(r.boosted) === 1,
       }));
   }
 
@@ -454,6 +533,113 @@ export class SqliteStore implements Store {
           .run(l.lives, l.updatedAt, l.infiniteUntil, Number(room.creator_id));
       }
       return 'ok';
+    });
+  }
+
+  private readWallet(userId: number): Wallet {
+    const u = this.db.prepare('SELECT * FROM users WHERE id = ?').get(userId) as Row | undefined;
+    if (!u) throw new Error(`no user ${userId}`);
+    const items = Object.fromEntries(ITEMS.map((i) => [i, 0])) as Record<Item, number>;
+    for (const r of this.db.prepare('SELECT item, count FROM inventory WHERE user_id = ?').all(userId) as Row[]) {
+      if ((ITEMS as readonly string[]).includes(String(r.item))) items[r.item as Item] = Number(r.count);
+    }
+    return {
+      crystals: Number(u.crystals), piggy: Number(u.piggy), items, starterUntil: Number(u.starter_until),
+      starterBought: Number(u.starter_bought) === 1, lives: toUser(u).lives,
+    };
+  }
+
+  private writeWallet(userId: number, w: WalletUpdate): void {
+    const set: string[] = [];
+    const args: (number | string)[] = [];
+    const put = (col: string, v: number) => { set.push(`${col} = ?`); args.push(v); };
+    if (w.crystals !== undefined) put('crystals', w.crystals);
+    if (w.piggy !== undefined) put('piggy', w.piggy);
+    if (w.starterUntil !== undefined) put('starter_until', w.starterUntil);
+    if (w.starterBought !== undefined) put('starter_bought', w.starterBought ? 1 : 0);
+    if (w.lives) {
+      put('lives', w.lives.lives);
+      put('lives_updated_at', w.lives.updatedAt);
+      put('infinite_until', w.lives.infiniteUntil);
+    }
+    if (set.length > 0) this.db.prepare(`UPDATE users SET ${set.join(', ')} WHERE id = ?`).run(...args, userId);
+    for (const [item, count] of Object.entries(w.items ?? {})) {
+      this.db.prepare(`INSERT INTO inventory (user_id, item, count) VALUES (?, ?, ?)
+        ON CONFLICT (user_id, item) DO UPDATE SET count = excluded.count`).run(userId, item, count);
+    }
+  }
+
+  async getWallet(userId: number): Promise<Wallet> {
+    return this.readWallet(userId);
+  }
+
+  async transact(userId: number, fn: (w: Wallet) => WalletUpdate | null): Promise<Wallet | null> {
+    return this.tx(() => {
+      const update = fn(this.readWallet(userId));
+      if (!update) return null;
+      if ((update.crystals ?? 0) < 0 || Object.values(update.items ?? {}).some((n) => n! < 0)) {
+        throw new Error('wallet would go negative');
+      }
+      this.writeWallet(userId, update);
+      return this.readWallet(userId);
+    });
+  }
+
+  async extendAttempt(attemptId: string, userId: number, priceFor: (extensions: number) => number) {
+    return this.tx(() => {
+      const a = this.db.prepare("SELECT extensions FROM attempts WHERE id = ? AND user_id = ? AND status = 'open'").get(attemptId, userId) as Row | undefined;
+      if (!a) return { status: 'not_open' as const, price: 0, wallet: null };
+      const price = priceFor(Number(a.extensions));
+      const w = this.readWallet(userId);
+      if (w.crystals < price) return { status: 'no_crystals' as const, price, wallet: w };
+      this.writeWallet(userId, { crystals: w.crystals - price });
+      this.db.prepare('UPDATE attempts SET extensions = extensions + 1 WHERE id = ?').run(attemptId);
+      return { status: 'ok' as const, price, wallet: this.readWallet(userId) };
+    });
+  }
+
+  async createInvoice(i: Omit<InvoiceRow, 'paidAt'>): Promise<void> {
+    this.db.prepare('INSERT INTO invoices (id, user_id, product, stars, created_at) VALUES (?, ?, ?, ?, ?)')
+      .run(i.id, i.userId, i.product, i.stars, i.createdAt);
+  }
+
+  async getPayment(chargeId: string) {
+    const r = this.db.prepare('SELECT * FROM payments WHERE charge_id = ?').get(chargeId) as Row | undefined;
+    return r ? { userId: Number(r.user_id), product: r.product as ProductId, stars: Number(r.stars), refunded: r.refunded_at !== null } : null;
+  }
+
+  async getInvoice(id: string): Promise<InvoiceRow | null> {
+    const r = this.db.prepare('SELECT * FROM invoices WHERE id = ?').get(id) as Row | undefined;
+    return r ? {
+      id: String(r.id), userId: Number(r.user_id), product: r.product as ProductId, stars: Number(r.stars),
+      createdAt: Number(r.created_at), paidAt: r.paid_at === null ? null : Number(r.paid_at),
+    } : null;
+  }
+
+  async recordPayment(p: { chargeId: string; invoiceId: string; userId: number; product: ProductId; stars: number; now: number },
+    grant: (w: Wallet) => WalletUpdate): Promise<'ok' | 'duplicate'> {
+    return this.tx(() => {
+      if (this.db.prepare('SELECT 1 FROM payments WHERE charge_id = ?').get(p.chargeId)) return 'duplicate';
+      const before = this.readWallet(p.userId);
+      const update = grant(before);
+      const granted = (update.crystals ?? before.crystals) - before.crystals;
+      this.db.prepare('INSERT INTO payments (charge_id, invoice_id, user_id, product, stars, created_at, granted_crystals) VALUES (?, ?, ?, ?, ?, ?, ?)')
+        .run(p.chargeId, p.invoiceId, p.userId, p.product, p.stars, p.now, granted);
+      this.db.prepare('UPDATE invoices SET paid_at = ? WHERE id = ?').run(p.now, p.invoiceId);
+      this.writeWallet(p.userId, update);
+      return 'ok';
+    });
+  }
+
+  async refundPayment(chargeId: string, now: number, revoke: (w: Wallet, product: ProductId, grantedCrystals: number) => WalletUpdate) {
+    return this.tx(() => {
+      const r = this.db.prepare('SELECT * FROM payments WHERE charge_id = ?').get(chargeId) as Row | undefined;
+      if (!r) return { status: 'not_found' as const };
+      const userId = Number(r.user_id);
+      if (r.refunded_at !== null) return { status: 'already' as const, userId };
+      this.db.prepare('UPDATE payments SET refunded_at = ? WHERE charge_id = ?').run(now, chargeId);
+      this.writeWallet(userId, revoke(this.readWallet(userId), r.product as ProductId, Number(r.granted_crystals)));
+      return { status: 'ok' as const, userId };
     });
   }
 

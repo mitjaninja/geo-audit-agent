@@ -64,6 +64,26 @@ export interface Swap {
   readonly b: Pos;
 }
 
+/** Бустеры во время игры (PRD, «Монетизация»): ход не тратят. */
+export type BoosterId = 'hammer' | 'freeSwap' | 'shuffle';
+
+/**
+ * Действие игрока в истории партии. Реплей на сервере проигрывает их по порядку,
+ * поэтому каждый использованный бустер и каждая докупка ходов проверяемы.
+ */
+export type Move =
+  | Swap
+  /** Молот Пона: убрать одну фишку (спецфишка сработает) или ударить по блокеру. */
+  | { readonly booster: 'hammer'; readonly at: Pos }
+  /** Свободный обмен: поменять соседние фишки без матча. */
+  | { readonly booster: 'freeSwap'; readonly a: Pos; readonly b: Pos }
+  /** Перемешать поле. */
+  | { readonly booster: 'shuffle' }
+  /** Докупка ходов после того, как они кончились (окно «+5 ходов»). */
+  | { readonly extraMoves: number };
+
+export const isPlainSwap = (m: Move): m is Swap => !('booster' in m) && !('extraMoves' in m);
+
 export interface Fall {
   readonly id: number;
   readonly from: Pos;
@@ -104,6 +124,8 @@ export type GameEvent =
   | { readonly type: 'reset'; readonly pieces: Spawn[] }
   /** За ход не снят ни один туман — он поглотил соседнюю фишку. */
   | { readonly type: 'fogSpread'; readonly from: Pos; readonly to: Pos; readonly pieceId: number }
+  | { readonly type: 'booster'; readonly booster: BoosterId; readonly at?: Pos }
+  | { readonly type: 'extraMoves'; readonly moves: number }
   /** Победа: оставшиеся ходы превращаются в очки. */
   | { readonly type: 'finale'; readonly movesLeft: number; readonly bonus: number };
 

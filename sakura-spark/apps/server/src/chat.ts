@@ -24,11 +24,15 @@ export interface ChatBotDeps {
   readonly refreshDelayMs?: number;
   readonly now?: () => number;
   readonly log?: (msg: string) => void;
+  /** Telegram id администраторов: им доступна команда /refund. */
+  readonly adminIds?: readonly number[];
 }
 
 interface TgUser { id: number; first_name?: string; username?: string; language_code?: string }
+interface SuccessfulPayment { currency: string; total_amount: number; invoice_payload: string; telegram_payment_charge_id: string }
 interface Update {
-  message?: { chat: { id: number; type: string }; from?: TgUser; text?: string };
+  message?: { chat: { id: number; type: string }; from?: TgUser; text?: string; successful_payment?: SuccessfulPayment };
+  pre_checkout_query?: { id: string; from: TgUser; currency: string; total_amount: number; invoice_payload: string };
   inline_query?: { id: string; from: TgUser; query: string };
   chosen_inline_result?: { result_id: string; from: TgUser; inline_message_id?: string };
   callback_query?: { id: string; from: TgUser; data?: string; inline_message_id?: string };
@@ -89,11 +93,12 @@ export class ChatBot {
       return `🏮 <b>${name} просит жизнь!</b>\nФонарики-сердечки закончились. Нажми кнопку — и жизнь улетит к ${name}.\n\nПодарили: ${view.gifts}/${view.maxGifts}`;
     }
     const lines = view.top.length > 0
-      ? view.top.map((r, i) => `${MEDALS[i]} ${esc(r.name || 'Игрок')} — ${fmt(r.score)}`).join('\n')
+      ? view.top.map((r, i) => `${MEDALS[i]} ${esc(r.name || 'Игрок')} — ${fmt(r.score)}${r.boosted ? ' ⚡' : ''}`).join('\n')
       : 'Пока никто не сыграл — будь первым!';
     const hoursLeft = Math.max(0, Math.ceil((room.expiresAt - this.now()) / 3600_000));
     const footer = view.expired ? 'Челлендж завершён 🏁' : `Сыграли: ${view.players} · до конца ${hoursLeft} ч`;
-    return `🌸 <b>${CHAT_TEXT.challengeTitle}</b> · уровень ${room.levelId}\n${esc(room.creatorName || 'Игрок')} зовёт: кто наберёт больше очков? Первая попытка бесплатно.\n\n${lines}\n\n${footer}`;
+    const legend = view.top.some((r) => r.boosted) ? '\n⚡ — с бустерами' : '';
+    return `🌸 <b>${CHAT_TEXT.challengeTitle}</b> · уровень ${room.levelId}\n${esc(room.creatorName || 'Игрок')} зовёт: кто наберёт больше очков? Первая попытка бесплатно.\n\n${lines}${legend}\n\n${footer}`;
   }
 
   cardMarkup(room: RoomRow): { inline_keyboard: unknown[][] } {
@@ -151,14 +156,60 @@ export class ChatBot {
 
   async handleUpdate(raw: unknown): Promise<void> {
     const u = raw as Update;
+    if (u.pre_checkout_query) return this.onPreCheckout(u.pre_checkout_query);
+    if (u.message?.successful_payment) return this.onPaid(u.message);
     if (u.message) return this.onMessage(u.message);
     if (u.inline_query) return this.onInlineQuery(u.inline_query);
     if (u.chosen_inline_result) return this.onChosen(u.chosen_inline_result);
     if (u.callback_query) return this.onCallback(u.callback_query);
   }
 
+  /** Ссылка на оплату счёта в Telegram Stars (валюта XTR, provider_token не нужен). */
+  async invoiceLink(inv: { invoiceId: string; title: string; description: string; stars: number }): Promise<string> {
+    return this.deps.api.call<string>('createInvoiceLink', {
+      title: inv.title, description: inv.description, payload: inv.invoiceId, currency: 'XTR',
+      prices: [{ label: inv.title, amount: inv.stars }],
+    });
+  }
+
+  /** Telegram ждёт ответ за 10 секунд: только сверка счёта, без тяжёлой работы. */
+  private async onPreCheckout(q: NonNullable<Update['pre_checkout_query']>): Promise<void> {
+    const error = await this.deps.service.preCheckout(q.invoice_payload, q.from.id, q.currency, q.total_amount);
+    await this.deps.api.call('answerPreCheckoutQuery', {
+      pre_checkout_query_id: q.id, ok: error === null, ...(error ? { error_message: error } : {}),
+    });
+  }
+
+  private async onPaid(msg: NonNullable<Update['message']>): Promise<void> {
+    const p = msg.successful_payment!;
+    if (!msg.from) return;
+    const status = await this.deps.service.completePayment(p.telegram_payment_charge_id, p.invoice_payload, msg.from.id, p.total_amount);
+    if (status === 'unknown') this.log(`payment for unknown invoice ${p.invoice_payload} (${p.telegram_payment_charge_id})`);
+    if (status === 'ok') await this.deps.api.call('sendMessage', { chat_id: msg.chat.id, text: BOT_TEXT.paid('Покупка') });
+  }
+
+  /** /refund <charge id> — только администраторам: сначала возврат в Telegram, потом списание в игре. */
+  private async onRefund(chatId: number, fromId: number | undefined, chargeId: string | undefined): Promise<void> {
+    if (!fromId || !this.deps.adminIds?.includes(fromId)) return;
+    const reply = (text: string) => this.deps.api.call('sendMessage', { chat_id: chatId, text });
+    if (!chargeId) return void (await reply('Использование: /refund <telegram_payment_charge_id>'));
+    const pay = await this.deps.service.getPayment(chargeId);
+    if (!pay) return void (await reply('Платёж не найден'));
+    if (pay.refunded) return void (await reply('Уже возвращён'));
+    try {
+      await this.deps.api.call('refundStarPayment', { user_id: pay.userId, telegram_payment_charge_id: chargeId });
+    } catch (e) {
+      return void (await reply(`Telegram не вернул платёж: ${String(e)}`));
+    }
+    await this.deps.service.refund(chargeId);
+    await reply(`Возвращено ${pay.stars} ⭐ игроку ${pay.userId}, покупка «${pay.product}» списана`);
+  }
+
   private async onMessage(msg: NonNullable<Update['message']>): Promise<void> {
     if (!msg.text || msg.chat.type !== 'private') return;
+    const cmd = /^\/(paysupport|terms|refund)(?:@\w+)?(?:\s+(\S+))?/.exec(msg.text);
+    if (cmd?.[1] === 'refund') return this.onRefund(msg.chat.id, msg.from?.id, cmd[2]);
+    if (cmd) return void (await this.deps.api.call('sendMessage', { chat_id: msg.chat.id, text: cmd[1] === 'terms' ? BOT_TEXT.terms : BOT_TEXT.paysupport }));
     const m = /^\/start(?:@\w+)?(?:\s+(\S+))?/.exec(msg.text);
     if (!m) return;
     const payload = m[1];

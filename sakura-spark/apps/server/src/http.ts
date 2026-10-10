@@ -94,9 +94,26 @@ export function createApp(deps: HttpDeps): Server {
     if (method === 'GET' && path === '/api/me') return send(res, 200, await deps.service.me(user));
     if (method === 'GET' && path === '/api/levels') return send(res, 200, { levels: deps.service.levelSummaries() });
     if (method === 'POST' && path === '/api/attempts') {
-      const { levelId } = await readJson(req);
+      const { levelId, boosters } = await readJson(req);
       if (!Number.isInteger(levelId)) throw new HttpError(400, 'bad_request');
-      return send(res, 200, await deps.service.startAttempt(user.id, levelId as number));
+      return send(res, 200, await deps.service.startAttempt(user.id, levelId as number, Array.isArray(boosters) ? boosters : []));
+    }
+    if (method === 'GET' && path === '/api/shop') return send(res, 200, deps.service.shop());
+    if (method === 'POST' && path === '/api/shop/buy') {
+      const { item, count } = await readJson(req);
+      return send(res, 200, { wallet: await deps.service.buyItem(user.id, item, count ?? 1) });
+    }
+    if (method === 'POST' && path === '/api/lives/refill') return send(res, 200, await deps.service.refillLives(user.id));
+    if (method === 'POST' && path === '/api/purchases') {
+      const { product } = await readJson(req);
+      if (!deps.bot) throw new HttpError(503, 'payments_unavailable');
+      const inv = await deps.service.createInvoice(user.id, product);
+      return send(res, 200, { invoiceId: inv.invoiceId, stars: inv.stars, link: await deps.bot.chat.invoiceLink(inv) });
+    }
+    const extend = /^\/api\/attempts\/([\w-]{1,64})\/extend$/.exec(path);
+    if (method === 'POST' && extend) {
+      const { moves } = await readJson(req);
+      return send(res, 200, await deps.service.extendAttempt(user.id, extend[1]!, moves));
     }
     if (method === 'POST' && path === '/api/events') {
       const body = await readJson(req);
@@ -117,7 +134,10 @@ export function createApp(deps: HttpDeps): Server {
     }
     const roomPath = /^\/api\/rooms\/(r[A-Za-z0-9]{1,32})(\/attempts)?$/.exec(path);
     if (roomPath && method === 'GET' && !roomPath[2]) return send(res, 200, await deps.service.roomView(roomPath[1]!, user.id));
-    if (roomPath && method === 'POST' && roomPath[2]) return send(res, 200, await deps.service.startRoomAttempt(user.id, roomPath[1]!));
+    if (roomPath && method === 'POST' && roomPath[2]) {
+      const { boosters } = await readJson(req);
+      return send(res, 200, await deps.service.startRoomAttempt(user.id, roomPath[1]!, Array.isArray(boosters) ? boosters : []));
+    }
     const finish = /^\/api\/attempts\/([\w-]{1,64})\/finish$/.exec(path);
     if (method === 'POST' && finish) {
       const body = await readJson(req);

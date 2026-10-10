@@ -23,7 +23,9 @@ if (botApi && config.webhookSecret) {
     log(`getMe failed: ${String(e)}`);
     return { username: process.env.BOT_USERNAME ?? '', has_main_web_app: false };
   });
-  chat = new ChatBot({ api: botApi, service, webAppUrl, botUsername: me.username, directLinks: me.has_main_web_app === true, log });
+  chat = new ChatBot({
+    api: botApi, service, webAppUrl, botUsername: me.username, directLinks: me.has_main_web_app === true, log, adminIds: config.adminIds,
+  });
   console.log(`bot: @${me.username}, links ${chat.link('rX').includes('startapp') ? 'startapp (Main Mini App)' : 'via /start (Main Mini App is off)'}`);
 }
 const server = createApp({

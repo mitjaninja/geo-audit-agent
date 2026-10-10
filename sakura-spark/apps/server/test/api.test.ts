@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, beforeEach, test } from 'node:test';
 import { gameOptionsFromLevel, Match3Game, parseLevel } from '@sakura/core';
-import type { LevelDef, Swap } from '@sakura/core';
+import type { LevelDef, Move } from '@sakura/core';
 import { signInitData } from '../src/auth.ts';
 import { BotApi, webhookToken } from '../src/bot.ts';
 import { ChatBot } from '../src/chat.ts';
@@ -84,7 +84,7 @@ async function call(method: string, path: string, body?: unknown, headers: Recor
 }
 
 /** Сыграть партию на клиенте тем же ядром: первый допустимый ход, пока не кончится. */
-function playLocally(levelId: number, seed: number, maxMoves = Infinity): Swap[] {
+function playLocally(levelId: number, seed: number, maxMoves = Infinity): Move[] {
   const game = new Match3Game(gameOptionsFromLevel(LEVELS.get(levelId)!, seed));
   while (game.status === 'playing' && game.history.length < maxMoves) game.swap(game.validSwaps()[0]!);
   return [...game.history];

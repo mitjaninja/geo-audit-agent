@@ -12,6 +12,8 @@ export interface Config {
   readonly clientDir: string;
   /** Вход «Authorization: dev <id>» без Telegram — только для локальной разработки. */
   readonly devAuth: boolean;
+  /** Telegram id администраторов (через запятую в ADMIN_IDS): команда /refund. */
+  readonly adminIds: readonly number[];
 }
 
 const root = resolve(import.meta.dirname, '../../..');
@@ -32,5 +34,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     levelsDir: env.LEVELS_DIR ?? resolve(root, 'levels'),
     clientDir: env.CLIENT_DIR ?? resolve(root, 'apps/client/dist'),
     devAuth,
+    adminIds: (env.ADMIN_IDS ?? '').split(',').map((x) => Number(x.trim())).filter((n) => Number.isSafeInteger(n) && n > 0),
   };
 }

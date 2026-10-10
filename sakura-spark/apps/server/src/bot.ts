@@ -28,7 +28,18 @@ export const BOT_TEXT = {
     'Играй прямо в Telegram — и зови друзей в чаты.',
   /** Короткое описание в профиле бота (до 120 символов). */
   shortDescription: 'Match-3 в аниме-стиле: собирай кристаллы, зажигай фонари и возвращай весну в Хоширо 🌸',
-  commands: [{ command: 'start', description: 'Играть' }],
+  commands: [
+    { command: 'start', description: 'Играть' },
+    { command: 'paysupport', description: 'Помощь с покупками' },
+    { command: 'terms', description: 'Условия' },
+  ],
+  paysupport:
+    'Помощь с покупками 🌸\n\nЕсли покупка не зачислилась или что-то пошло не так — напиши сюда, что случилось, '
+    + 'и пришли код платежа из чека Telegram. Мы разберёмся и при необходимости вернём Stars.',
+  terms:
+    'Sakura Spark — бесплатная игра. Кристаллы и бустеры — виртуальные предметы для использования только в игре, '
+    + 'они не обмениваются на деньги. Покупки оплачиваются Telegram Stars; по спорным случаям — /paysupport.',
+  paid: (what: string) => `Готово! ${what} — уже в игре 🌸`,
   start: (name: string) =>
     `Привет, ${name}! 🌸\n\nКурогири украл фестивальные фонари, и сакура в Хоширо перестала цвести. ` +
     'Помоги Мике вернуть свет — собирай кристаллы по три и больше.',
@@ -56,7 +67,7 @@ export async function setupBot(api: BotApi, publicUrl: string, webhookSecret: st
   await api.call('setWebhook', {
     url: `${base}/telegram/webhook`,
     secret_token: webhookToken(webhookSecret),
-    allowed_updates: ['message', 'inline_query', 'chosen_inline_result', 'callback_query'],
+    allowed_updates: ['message', 'inline_query', 'chosen_inline_result', 'callback_query', 'pre_checkout_query'],
     drop_pending_updates: true,
   });
   await api.call('setChatMenuButton', { menu_button: { type: 'web_app', text: BOT_TEXT.play, web_app: { url: `${base}/` } } });

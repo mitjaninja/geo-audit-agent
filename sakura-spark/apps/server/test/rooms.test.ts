@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { after, beforeEach, test } from 'node:test';
 import { gameOptionsFromLevel, Match3Game, parseLevel } from '@sakura/core';
-import type { LevelDef, Swap } from '@sakura/core';
+import type { LevelDef, Move } from '@sakura/core';
 import { BotApi } from '../src/bot.ts';
 import { ChatBot } from '../src/chat.ts';
 import { createApp } from '../src/http.ts';
@@ -62,7 +62,7 @@ async function call(method: string, path: string, body?: unknown, user = 1) {
   return { status: res.status, body: (await res.json()) as any };
 }
 
-function play(levelId: number, seed: number, pick = 0): Swap[] {
+function play(levelId: number, seed: number, pick = 0): Move[] {
   const game = new Match3Game(gameOptionsFromLevel(LEVELS.get(levelId)!, seed));
   while (game.status === 'playing') {
     const s = game.validSwaps();
@@ -81,7 +81,7 @@ async function playRoom(roomId: string, user: number, pick = 0) {
 
 const webhook = (update: unknown) => chat.handleUpdate(update);
 
-test('migration: a pre-migration database moves to v2 and keeps its data', () => {
+test('migration: a pre-migration database moves to the latest version and keeps its data', () => {
   const path = join(mkdtempSync(join(tmpdir(), 'sakura-db-')), 'old.db');
   const old = new DatabaseSync(path);
   old.exec(`CREATE TABLE users (id INTEGER PRIMARY KEY, first_name TEXT NOT NULL, username TEXT, language_code TEXT,
@@ -93,13 +93,16 @@ test('migration: a pre-migration database moves to v2 and keeps its data', () =>
     INSERT INTO attempts (id, user_id, level_id, seed, started_at, status) VALUES ('a1', 7, 2, 5, 1, 'won');`);
   old.close();
   const s = new SqliteStore(path);
-  assert.equal(s.schemaVersion, 2);
-  return Promise.all([s.getUser(7), s.getAttempt('a1')]).then(([u, a]) => {
+  assert.equal(s.schemaVersion, 3);
+  return Promise.all([s.getUser(7), s.getAttempt('a1'), s.getWallet(7)]).then(([u, a, w]) => {
     assert.equal(u?.maxLevel, 9);
     assert.equal(u?.lives.lives, 3);
     assert.equal(a?.roomId, null);
+    assert.deepEqual(a?.startBoosters, []);
+    assert.equal(w.crystals, 0);
+    assert.deepEqual(Object.values(w.items), [3, 3, 3, 3, 3, 3], 'existing players get the free boosters too');
     s.close();
-    assert.equal(new SqliteStore(path).schemaVersion, 2, 'reopening does not re-run migrations');
+    assert.equal(new SqliteStore(path).schemaVersion, 3, 'reopening does not re-run migrations');
   });
 });
 

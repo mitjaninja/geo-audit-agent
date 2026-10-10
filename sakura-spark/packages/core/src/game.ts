@@ -2,7 +2,7 @@ import { Board } from './board.ts';
 import { BLOCKER_CHARS, damage, layersOf } from './blockers.ts';
 import type { BlockerKind, Portal } from './blockers.ts';
 import { findMatches } from './match.ts';
-import { findValidSwaps, isAdjacent, isValidSwap, swapPieces } from './moves.ts';
+import { canSwapCells, findValidSwaps, isAdjacent, isValidSwap, swapPieces } from './moves.ts';
 import { Rng } from './rng.ts';
 import {
   allCells, anchorFor, blastArea, colCells, comboKind, rowCells, specialForGroup, squareCells,
@@ -11,8 +11,9 @@ import type { MadeSpecial } from './specials.ts';
 import { starsFor } from './goals.ts';
 import type { Goal, GoalProgress, LanternRule } from './goals.ts';
 import type {
-  Activation, Color, ComboKind, CascadeStep, Fall, GameEvent, MatchGroup, Pos, Spawn, Swap, SwapResult,
+  Activation, Color, ComboKind, CascadeStep, Fall, GameEvent, MatchGroup, Move, Pos, Spawn, Swap, SwapResult,
 } from './types.ts';
+import { isPlainSwap } from './types.ts';
 
 export const POINTS_PER_PIECE = 20;
 /** Бонус за рождение спецфишки, не умножается на каскад. */
@@ -68,7 +69,18 @@ export interface GameOptions {
    * итог — при timeUp(): цели выполнены — победа. Бонуса за остаток нет.
    */
   readonly timeLimit?: number;
+  /** Бустеры перед уровнем (PRD): луч + бомба на поле, радужный кристалл, +3 хода. */
+  readonly startBoosters?: StartBoosters;
 }
+
+export interface StartBoosters {
+  readonly beamBomb?: boolean;
+  readonly rainbow?: boolean;
+  readonly extraMoves?: boolean;
+}
+
+/** «+3 хода» перед уровнем. */
+export const START_EXTRA_MOVES = 3;
 
 /** PRD: после 5+ поражений подряд — мягкое облегчение, растущее с серией. */
 export function assistForLossStreak(losses: number): number {
@@ -101,7 +113,7 @@ export class Match3Game {
   private _score = 0;
   private _won = false;
   private _timedOut = false;
-  private readonly _history: Swap[] = [];
+  private readonly _history: Move[] = [];
   private readonly jelly: number[][];
   private readonly jellyTotal: number;
   private jellyLeft: number;
@@ -154,6 +166,7 @@ export class Match3Game {
     this.jellyTotal = this.jelly.flat().reduce((a, b) => a + b, 0);
     this.jellyLeft = this.jellyTotal;
     this.ensurePlayable();
+    this.applyStartBoosters(options.startBoosters);
   }
 
   /**
@@ -191,12 +204,19 @@ export class Match3Game {
     else this._timedOut = true;
   }
 
-  static replay(options: GameOptions, swaps: readonly Swap[]): Match3Game {
+  static replay(options: GameOptions, moves: readonly Move[]): Match3Game {
     const game = new Match3Game(options);
-    for (const [i, swap] of swaps.entries()) {
-      if (!game.swap(swap).valid) throw new Error(`replay: swap #${i} is invalid`);
+    for (const [i, move] of moves.entries()) {
+      if (!game.apply(move).valid) throw new Error(`replay: move #${i} is invalid`);
     }
     return game;
+  }
+
+  /** Любое действие из истории: свап, бустер или докупка ходов. */
+  apply(move: Move): SwapResult {
+    if (isPlainSwap(move)) return this.swap(move);
+    if ('extraMoves' in move) return this.addMoves(move.extraMoves);
+    return this.useBooster(move);
   }
 
   get movesLeft(): number {
@@ -207,7 +227,7 @@ export class Match3Game {
     return this._score;
   }
 
-  get history(): readonly Swap[] {
+  get history(): readonly Move[] {
     return this._history;
   }
 
@@ -219,6 +239,27 @@ export class Match3Game {
 
   get stars(): 0 | 1 | 2 | 3 {
     return this.options.stars ? starsFor(this._score, this.options.stars, this._won) : 0;
+  }
+
+  /** Бустеры перед уровнем: спецфишки ставятся на случайные обычные фишки (по сиду — реплей сходится). */
+  private applyStartBoosters(b: StartBoosters | undefined): void {
+    if (!b) return;
+    if (b.extraMoves) this._movesLeft += START_EXTRA_MOVES;
+    const cells = this.rng.shuffle(this.board.playableCells()
+      .filter((p) => this.board.isMovable(p) && this.board.get(p)?.special === 'none'));
+    const take = () => cells.pop();
+    if (b.beamBomb) {
+      for (const special of [this.rng.int(2) === 0 ? 'lineH' : 'lineV', 'bomb'] as const) {
+        const at = take();
+        if (at) this.board.set(at, Board.withSpecial(this.board.get(at)!, special));
+      }
+    }
+    if (b.rainbow) {
+      const at = take();
+      if (at) this.board.set(at, this.board.makeRainbow());
+    }
+    // радуга без цвета могла лишить поле ходов
+    this.ensurePlayable();
   }
 
   private applyBlockers(rows: readonly string[] | undefined): void {
@@ -287,15 +328,20 @@ export class Match3Game {
     this._history.push(swap);
     this.fogClearedThisMove = false;
 
-    const combo = this.comboPlan(swap);
+    this.settle(events, this.comboPlan(swap), [swap.b, swap.a], true);
+    return { valid: true, events };
+  }
+
+  /**
+   * Развязка после действия: каскады, затем победа, предел времени, рост тумана (только после хода),
+   * перемешивание, если ходов не осталось.
+   */
+  private settle(events: GameEvent[], first: StepPlan | null, preferred: Pos[], isMove: boolean): void {
     for (let index = 0; index < MAX_CASCADES; index++) {
-      const plan: StepPlan | null = index === 0 && combo
-        ? combo
-        : this.matchPlan(index === 0 ? [swap.b, swap.a] : []);
+      const plan: StepPlan | null = index === 0 && first ? first : this.matchPlan(index === 0 ? preferred : []);
       if (!plan) break;
       events.push({ type: 'cascade', step: this.resolveStep(index, plan), index });
     }
-
     const timed = this.options.timeLimit !== undefined;
     if (!timed && this.goalsDone()) {
       this._won = true;
@@ -306,11 +352,66 @@ export class Match3Game {
       // предел ходов на уровне на время — как истёкшее время
       this.settleTimed();
     } else {
-      const spread = this.spreadFog();
-      if (spread) events.push(spread);
+      if (isMove) {
+        const spread = this.spreadFog();
+        if (spread) events.push(spread);
+      }
       events.push(...this.ensurePlayable());
     }
+  }
+
+  /** Бустер во время игры. Ход не тратит; недопустимый бустер ничего не меняет. */
+  useBooster(move: Extract<Move, { booster: string }>): SwapResult {
+    if (this.status !== 'playing') return { valid: false, events: [] };
+    const events: GameEvent[] = [];
+    if (move.booster === 'hammer') {
+      const { at } = move;
+      const piece = this.board.get(at);
+      const hasBlocker = this.board.isPlayable(at) && this.board.blockerAt(at) !== null;
+      // фонарик молотом не разбить — его можно только довести вниз
+      if (!this.board.isPlayable(at) || (!hasBlocker && (!piece || piece.special === 'lantern'))) return { valid: false, events: [] };
+      this._history.push(move);
+      events.push({ type: 'booster', booster: 'hammer', at });
+      this.settle(events, { combo: null, groups: [], targets: [at], consumed: [], preferred: [] }, [], false);
+      return { valid: true, events };
+    }
+    if (move.booster === 'freeSwap') {
+      const swap = { a: move.a, b: move.b };
+      if (!canSwapCells(this.board, swap)) return { valid: false, events: [] };
+      this._history.push(move);
+      events.push({ type: 'booster', booster: 'freeSwap', at: move.a }, { type: 'swap', swap });
+      swapPieces(this.board, swap);
+      this.settle(events, this.comboPlan(swap), [swap.b, swap.a], false);
+      return { valid: true, events };
+    }
+    this._history.push(move);
+    events.push({ type: 'booster', booster: 'shuffle' }, ...this.shuffleBoard());
     return { valid: true, events };
+  }
+
+  /**
+   * Докупка ходов (окно «+5 ходов»): только когда ходы кончились и цели не выполнены.
+   * На уровне на время не работает — там нет счёта ходов.
+   */
+  addMoves(n: number): SwapResult {
+    const outOfMoves = !this._won && !this._timedOut && this._movesLeft === 0;
+    if (!outOfMoves || this.options.timeLimit !== undefined || !Number.isInteger(n) || n < 1 || n > 10) {
+      return { valid: false, events: [] };
+    }
+    this._movesLeft += n;
+    this._history.push({ extraMoves: n });
+    return { valid: true, events: [{ type: 'extraMoves', moves: n }, ...this.ensurePlayable()] };
+  }
+
+  get extraMovesBought(): number {
+    return this._history.filter((m) => 'extraMoves' in m).length;
+  }
+
+  /** Сколько раз использован каждый бустер — сервер списывает их со склада игрока. */
+  boostersUsed(): Record<'hammer' | 'freeSwap' | 'shuffle', number> {
+    const used = { hammer: 0, freeSwap: 0, shuffle: 0 };
+    for (const m of this._history) if ('booster' in m) used[m.booster]++;
+    return used;
   }
 
   private matchPlan(preferred: Pos[]): StepPlan | null {
@@ -588,7 +689,11 @@ export class Match3Game {
   /** Если ходов нет — перемешать; если и это не помогло — собрать поле заново. */
   private ensurePlayable(): GameEvent[] {
     if (findValidSwaps(this.board).length > 0) return [];
+    return this.shuffleBoard();
+  }
 
+  /** Перемешать поле так, чтобы не было готовых матчей и был ход; не вышло — собрать заново. */
+  private shuffleBoard(): GameEvent[] {
     // перемешиваются только подвижные фишки: лианы и блокеры остаются на местах
     const cells = this.board.playableCells().filter((p) => this.board.isMovable(p));
     const original = cells.map((p) => this.board.get(p)!);
