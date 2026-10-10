@@ -3,6 +3,7 @@ import type { Move } from '@sakura/core';
 import type { TelegramUser } from './auth.ts';
 import type { LivesState } from './lives.ts';
 import { ITEMS } from './economy.ts';
+import type { MetaState } from './meta.ts';
 import type { Item, ProductId } from './economy.ts';
 
 export interface UserRow {
@@ -61,6 +62,8 @@ export interface Wallet {
   readonly starterUntil: number;
   readonly starterBought: boolean;
   readonly lives: LivesState;
+  /** Мета: задания, календарь, колесо, сундуки, карточки (JSON в строке игрока). */
+  readonly meta: MetaState;
 }
 
 /** Новые значения кошелька (абсолютные); items — только изменённые предметы. */
@@ -71,6 +74,7 @@ export interface WalletUpdate {
   readonly starterUntil?: number;
   readonly starterBought?: boolean;
   readonly lives?: LivesState;
+  readonly meta?: MetaState;
 }
 
 export interface InvoiceRow {
@@ -339,7 +343,12 @@ const MIGRATIONS: readonly string[] = [
   );
   ALTER TABLE attempts ADD COLUMN moves INTEGER;
   ALTER TABLE attempts ADD COLUMN time_limit INTEGER;`,
+  // v5: мета — задания, календарь входа, колесо, сундуки эпизодов, карточки
+  `ALTER TABLE users ADD COLUMN meta TEXT NOT NULL DEFAULT '{}';`,
 ];
+
+/** Версия схемы после всех миграций. */
+export const SCHEMA_VERSION = MIGRATIONS.length;
 
 type Row = Record<string, unknown>;
 
@@ -590,6 +599,7 @@ export class SqliteStore implements Store {
     return {
       crystals: Number(u.crystals), piggy: Number(u.piggy), items, starterUntil: Number(u.starter_until),
       starterBought: Number(u.starter_bought) === 1, lives: toUser(u).lives,
+      meta: JSON.parse(String(u.meta ?? '{}')) as MetaState,
     };
   }
 
@@ -605,6 +615,10 @@ export class SqliteStore implements Store {
       put('lives', w.lives.lives);
       put('lives_updated_at', w.lives.updatedAt);
       put('infinite_until', w.lives.infiniteUntil);
+    }
+    if (w.meta) {
+      set.push('meta = ?');
+      args.push(JSON.stringify(w.meta));
     }
     if (set.length > 0) this.db.prepare(`UPDATE users SET ${set.join(', ')} WHERE id = ?`).run(...args, userId);
     for (const [item, count] of Object.entries(w.items ?? {})) {

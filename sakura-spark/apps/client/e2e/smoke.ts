@@ -280,6 +280,7 @@ try {
     // сразу открыть сложный уровень 25 и дать кристаллов — проигрыш по ходам почти гарантирован
     (store as any).db.prepare('UPDATE users SET max_level = 25 WHERE id = 20').run();
     await store.transact(20, (w) => ({ crystals: w.crystals + 100 }));
+    await service.claimLogin(20); // календарь входа не открывается сам — сценарий про экономику
     const { page, errors } = await open('?devUser=20');
     await mapReady(page);
     await page.screenshot({ path: `${OUT}/11-map-wallet.png` });
@@ -337,6 +338,46 @@ try {
     await clickCanvas(page, (await g(page, 'globalThis.__sakuraShop.buttons.find((b) => b.label === "225 ⭐")')) as { x: number; y: number });
     await page.waitForFunction(() => (globalThis as any).__sakuraShop.status?.text?.includes('Telegram'));
     await clickCanvas(page, (await g(page, 'globalThis.__sakuraShop.buttons.find((b) => b.label === "Закрыть")')) as { x: number; y: number });
+    await mapReady(page);
+    assert.deepEqual(errors, []);
+    await page.context().close();
+  }
+
+  console.log('meta: login calendar opens by itself, chest of the district, daily tasks, wheel with odds');
+  {
+    await service.login({ id: 21, firstName: 'Сэцу' });
+    const db = (store as any).db;
+    db.prepare('UPDATE users SET max_level = 16 WHERE id = 21').run();
+    for (let l = 1; l <= 15; l++) db.prepare('INSERT INTO level_progress (user_id, level_id, best_score, stars, wins) VALUES (21, ?, 1, ?, 1)').run(l, l <= 11 ? 3 : 0);
+    const { page, errors } = await open('?devUser=21');
+    const dailyReady = () => page.waitForFunction(() => (globalThis as any).__sakuraDaily?.scene.isActive() && (globalThis as any).__sakuraDaily.buttons.length > 0);
+    const dailyButton = (label: string) => g(page, `globalThis.__sakuraDaily.buttons.find((b) => b.label === ${JSON.stringify(label)})`) as Promise<{ x: number; y: number }>;
+    await dailyReady();
+    await page.waitForTimeout(300);
+    await page.screenshot({ path: `${OUT}/15-daily.png` });
+    await clickCanvas(page, await dailyButton('Забрать награду'));
+    await page.waitForFunction(() => (globalThis as any).__sakuraDaily?.scene.isActive() && !(globalThis as any).__sakuraDaily.buttons.some((b: any) => b.label === 'Забрать награду'));
+    assert.equal((await store.getWallet(21)).items.shuffle, 4, 'day 1: shuffle');
+    await dailyReady();
+    await clickCanvas(page, await dailyButton('30 ★'));
+    await page.waitForTimeout(500);
+    await dailyReady();
+    assert.equal((await store.getWallet(21)).crystals, 2, 'chest 30 opened');
+    await page.screenshot({ path: `${OUT}/16-daily-claimed.png` });
+    await clickCanvas(page, await dailyButton('Закрыть'));
+    await mapReady(page);
+    await page.waitForTimeout(300);
+    await page.screenshot({ path: `${OUT}/17-map-meta.png` });
+    await clickCanvas(page, (await g(page, 'm.wheelButton')) as { x: number; y: number });
+    await page.waitForFunction(() => (globalThis as any).__sakuraWheel?.scene.isActive() && (globalThis as any).__sakuraWheel.buttons.length > 0);
+    await page.waitForTimeout(300);
+    await page.screenshot({ path: `${OUT}/18-wheel.png` });
+    await clickCanvas(page, (await g(page, 'globalThis.__sakuraWheel.buttons.find((b) => b.label === "Крутить бесплатно")')) as { x: number; y: number });
+    await page.waitForFunction(() => (globalThis as any).__sakuraWheel?.scene.isActive() && (globalThis as any).__sakuraWheel.buttons.some((b: any) => b.label.startsWith('Ещё спин')), undefined, { timeout: 10_000 });
+    await page.waitForTimeout(300);
+    await page.screenshot({ path: `${OUT}/19-wheel-after.png` });
+    assert.ok((await store.getEvents(21)).some((e) => e.name === 'wheel_spin'));
+    await clickCanvas(page, (await g(page, 'globalThis.__sakuraWheel.buttons.find((b) => b.label === "Закрыть")')) as { x: number; y: number });
     await mapReady(page);
     assert.deepEqual(errors, []);
     await page.context().close();

@@ -89,6 +89,45 @@ export interface CreatedRoom {
   readonly link: string | null;
 }
 
+export interface Reward {
+  readonly crystals?: number;
+  readonly items?: Partial<Record<Item, number>>;
+  readonly infiniteLivesMs?: number;
+  readonly card?: string;
+}
+
+export type TaskKind = 'win' | 'stars' | 'threeStars' | 'booster' | 'score' | 'room';
+
+export interface TaskState {
+  readonly kind: TaskKind;
+  readonly target: number;
+  readonly progress: number;
+  readonly claimed: boolean;
+  readonly reward: Reward;
+}
+
+/** Мета: календарь входа, задания, сундуки эпизодов, колесо, карточки, помощь застрявшему. */
+export interface MetaView {
+  readonly day: number;
+  readonly nextDayAt: number;
+  readonly login: { readonly count: number; readonly claimedToday: boolean; readonly position: number; readonly rewards: readonly Reward[] };
+  readonly tasks: readonly TaskState[];
+  readonly chests: readonly {
+    readonly episode: number; readonly stars: number;
+    readonly tiers: readonly { readonly tier: number; readonly reward: Reward; readonly claimed: boolean; readonly available: boolean }[];
+  }[];
+  readonly wheel: { readonly free: boolean; readonly extraLeft: number; readonly price: number; readonly prizes: readonly { readonly id: string; readonly weight: number; readonly reward: Reward }[] };
+  readonly cards: Readonly<Record<string, number>>;
+  readonly stuck: { readonly levelId: number; readonly reward: Reward } | null;
+}
+
+export interface MetaClaim {
+  readonly reward: Reward;
+  readonly wallet: WalletView;
+  readonly lives: LivesView;
+  readonly meta: MetaView;
+}
+
 export type Auth = { readonly kind: 'tma'; readonly initData: string } | { readonly kind: 'dev'; readonly userId: string };
 
 export class ApiError extends Error {
@@ -119,6 +158,12 @@ export interface Api {
   refillLives(): Promise<{ lives: LivesView; wallet: WalletView }>;
   /** Счёт в Telegram Stars: ссылка для Telegram.WebApp.openInvoice. */
   purchase(product: ProductId): Promise<{ invoiceId: string; stars: number; link: string }>;
+  meta(): Promise<MetaView>;
+  claimLogin(): Promise<MetaClaim>;
+  claimTask(slot: number): Promise<MetaClaim>;
+  claimChest(episode: number, tier: number): Promise<MetaClaim>;
+  claimStuck(): Promise<MetaClaim>;
+  spin(): Promise<MetaClaim & { prize: string }>;
 }
 
 export function createApi(auth: Auth, base = '', fetchImpl: typeof fetch = (...a) => fetch(...a)): Api {
@@ -147,5 +192,11 @@ export function createApi(auth: Auth, base = '', fetchImpl: typeof fetch = (...a
     buy: (item, count = 1) => call('POST', '/api/shop/buy', { item, count }),
     refillLives: () => call('POST', '/api/lives/refill'),
     purchase: (product) => call('POST', '/api/purchases', { product }),
+    meta: () => call<MetaView>('GET', '/api/meta'),
+    claimLogin: () => call('POST', '/api/meta/login'),
+    claimTask: (slot) => call('POST', '/api/meta/tasks', { slot }),
+    claimChest: (episode, tier) => call('POST', '/api/meta/chests', { episode, tier }),
+    claimStuck: () => call('POST', '/api/meta/stuck'),
+    spin: () => call('POST', '/api/meta/wheel'),
   };
 }

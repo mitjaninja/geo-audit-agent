@@ -23,6 +23,11 @@ export interface MapData {
   /** Кристаллы и вход в магазин; null — офлайн. */
   readonly crystals: number | null;
   readonly onShop: (() => void) | null;
+  /** Награды дня и колесо; badge — есть что забрать. null — офлайн. */
+  readonly onDaily?: (() => void) | null;
+  readonly dailyBadge?: boolean;
+  readonly onWheel?: (() => void) | null;
+  readonly wheelBadge?: boolean;
 }
 
 const FONT = 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
@@ -37,6 +42,8 @@ export class MapScene extends Phaser.Scene {
   /** Кнопка «В чат» в пикселях canvas — для e2e. */
   shareButton: { x: number; y: number } | null = null;
   shopButton: { x: number; y: number } | null = null;
+  dailyButton: { x: number; y: number } | null = null;
+  wheelButton: { x: number; y: number } | null = null;
   /** Нажатие по кнопке поверх карты — чтобы тап не попал в узел уровня под ней. */
   private shareTapped = false;
 
@@ -165,6 +172,22 @@ export class MapScene extends Phaser.Scene {
         });
       this.shareButton = { x: bx, y: by };
     }
+
+    // круглые кнопки меты справа под панелью
+    const round = (icon: string, cy: number, badge: boolean, onTap: () => void) => {
+      const cx = W - 40 * k;
+      const r = 24 * k;
+      this.add.circle(cx, cy, r, hexToInt(theme.panel), 0.95).setStrokeStyle(2 * k, hexToInt(theme.button)).setScrollFactor(0).setDepth(11);
+      this.add.text(cx, cy, icon, { fontFamily: FONT, fontSize: `${Math.round(22 * k)}px` }).setOrigin(0.5).setScrollFactor(0).setDepth(12);
+      if (badge) this.add.circle(cx + r * 0.7, cy - r * 0.7, 6 * k, 0xff3b5c).setStrokeStyle(2 * k, 0xffffff).setScrollFactor(0).setDepth(13);
+      this.add.zone(cx, cy, r * 2, r * 2).setScrollFactor(0).setDepth(12).setInteractive({ useHandCursor: true }).on('pointerup', () => {
+        this.shareTapped = true;
+        onTap();
+      });
+      return { x: cx, y: cy };
+    };
+    this.dailyButton = data.onDaily ? round('🎁', barY + 84 * k, data.dailyBadge === true, data.onDaily) : null;
+    this.wheelButton = data.onWheel ? round('🎡', barY + 142 * k, data.wheelBadge === true, data.onWheel) : null;
 
     const focus = g.node(Math.min(data.focus ?? current, levelCount));
     this.cameras.main.setScroll(0, focus.y - H * 0.6);

@@ -9,6 +9,11 @@ import { DEFAULT_ECONOMY, extendPrice, GAME_ITEMS, isItem, ITEMS, START_ITEMS } 
 import type { Economy, Item, ProductId } from './economy.ts';
 import { ConfigError, levelForAttempt, lossStreakForAssist, parseRemoteConfig, resolveConfig, tweakLevel } from './remote.ts';
 import type { Effective, RemoteConfig } from './remote.ts';
+import {
+  addCard, CALENDAR, calendarReward, CHEST_TIERS, CHESTS, dayNumber, episodeOf, grant, LEVELS_PER_EPISODE, progressTasks,
+  todayTasks, WHEEL, wheelPrize,
+} from './meta.ts';
+import type { ChestTier, MetaState, Reward, TaskKind, TaskState } from './meta.ts';
 
 /** События, которые может прислать клиент. Игровые итоги пишет только сервер — по реплею. */
 export const CLIENT_EVENTS: ReadonlySet<string> = new Set([
@@ -66,7 +71,7 @@ export interface RoomView {
 export class ServiceError extends Error {
   constructor(
     readonly code: 'unknown_level' | 'level_locked' | 'no_lives' | 'not_found' | 'not_open' | 'invalid_replay' | 'bad_request'
-      | 'room_limit' | 'room_expired' | 'no_crystals' | 'no_items' | 'not_available',
+      | 'room_limit' | 'room_expired' | 'no_crystals' | 'no_items' | 'not_available' | 'already' | 'not_done' | 'limit',
     readonly status: number,
     readonly details: Record<string, unknown> = {},
   ) {
@@ -133,6 +138,8 @@ export interface ServiceDeps {
   /** Базовая экономика; remote config накладывается поверх. */
   readonly economy?: Economy;
   readonly log?: (msg: string) => void;
+  /** Случайность колеса (в тестах — подменяется). */
+  readonly random?: () => number;
 }
 
 const emptyProgress = (levelId: number): LevelProgress => ({ levelId, bestScore: 0, stars: 0, wins: 0, losses: 0, lossStreak: 0 });
@@ -151,6 +158,7 @@ export class GameService {
   private readonly onRoomChanged: (roomId: string) => void;
   readonly economy: Economy;
   private readonly log: (msg: string) => void;
+  private readonly random: () => number;
   /** Действующий remote config (кеш; сервер один, правки идут через setConfig). */
   private config: RemoteConfig | null = null;
 
@@ -164,6 +172,7 @@ export class GameService {
     this.onRoomChanged = deps.onRoomChanged ?? (() => {});
     this.economy = deps.economy ?? DEFAULT_ECONOMY;
     this.log = deps.log ?? (() => {});
+    this.random = deps.random ?? (() => randomInt(2 ** 32) / 2 ** 32);
   }
 
   // ---------- remote config ----------
@@ -391,10 +400,16 @@ export class GameService {
     // копилка растёт за победы; стартовый пак открывается один раз, когда игрок прошёл уровень 15
     const e = (await this.configFor(userId)).economy;
     const crossed = user.maxLevel <= e.starter.afterLevel && maxLevel > e.starter.afterLevel;
-    await this.store.transact(userId, (w) => ({
-      piggy: Math.min(e.piggy.max, w.piggy + e.piggy.perWin),
-      ...(crossed && !w.starterBought && w.starterUntil === 0 ? { starterUntil: now + e.starter.windowMs } : {}),
-    }));
+    const day = dayNumber(now, e.meta.dayOffsetHours);
+    await this.store.transact(userId, (w) => {
+      const meta = progressTasks(w.meta, userId, day, { win: 1, stars: game.stars, threeStars: game.stars === 3 ? 1 : 0, score: game.score });
+      return {
+        piggy: Math.min(e.piggy.max, w.piggy + e.piggy.perWin),
+        ...(crossed && !w.starterBought && w.starterUntil === 0 ? { starterUntil: now + e.starter.windowMs } : {}),
+        // защита от выгорания считает дни с открытия последнего уровня
+        meta: maxLevel > user.maxLevel ? { ...meta, maxLevelAt: now } : meta,
+      };
+    });
     await this.track(userId, 'level_win', level.id, {
       attemptId: attempt.id, score: game.score, stars: game.stars, movesUsed: parsed.length,
       movesLeft: level.timeLimit === undefined ? game.movesLeft : null, assist: attempt.assist,
@@ -501,6 +516,7 @@ export class GameService {
     await this.track(user.id, 'room_finish', attempt.levelId, {
       roomId: attempt.roomId, attemptId: attempt.id, score: game.score, stars: game.stars, won, movesLeft: game.movesLeft,
     });
+    await this.bumpTasks(user.id, { room: 1, score: game.score });
     const results = await this.store.getRoomResults(attempt.roomId!);
     const place = results.findIndex((r) => r.userId === user.id) + 1;
     this.onRoomChanged(attempt.roomId!);
@@ -547,6 +563,7 @@ export class GameService {
     });
     if (!ok) throw new ServiceError('no_items', 409, { items });
     await this.track(userId, 'booster_used', null, { items, when: 'start' });
+    await this.bumpTasks(userId, { booster: items.length });
   }
 
   /**
@@ -566,6 +583,7 @@ export class GameService {
     });
     if (!ok) return 'no_boosters';
     await this.track(attempt.userId, 'booster_used', attempt.levelId, { used, when: 'game', attemptId: attempt.id });
+    await this.bumpTasks(attempt.userId, { booster: spent.reduce((s, [, n]) => s + n, 0) });
     return null;
   }
 
@@ -596,6 +614,164 @@ export class GameService {
       attemptId, price: r.price, n: attempt.extensions + 1, goalProgress: Math.round(goalProgress(game) * 100) / 100,
     });
     return { price: r.price, extensions: attempt.extensions + 1, wallet: this.walletView(r.wallet!) };
+  }
+
+  // ---------- мета: задания, календарь, колесо, сундуки, помощь застрявшему ----------
+
+  private async bumpTasks(userId: number, deltas: Partial<Record<TaskKind, number>>): Promise<void> {
+    const day = dayNumber(this.now(), (await this.configFor(userId)).economy.meta.dayOffsetHours);
+    await this.store.transact(userId, (w) => ({ meta: progressTasks(w.meta, userId, day, deltas) }));
+  }
+
+  /** Звёзды по эпизодам (лучшие по каждому уровню). */
+  private async episodeStars(userId: number): Promise<Map<number, number>> {
+    const out = new Map<number, number>();
+    for (const p of await this.store.getProgress(userId)) out.set(episodeOf(p.levelId), (out.get(episodeOf(p.levelId)) ?? 0) + p.stars);
+    return out;
+  }
+
+  private isStuck(meta: MetaState, maxLevel: number, e: Economy, now: number): boolean {
+    return meta.maxLevelAt !== undefined && now - meta.maxLevelAt >= e.meta.stuckDays * 86_400_000
+      && meta.stuckGift !== maxLevel && maxLevel <= this.levels.size;
+  }
+
+  async metaView(userId: number): Promise<MetaView> {
+    const e = (await this.configFor(userId)).economy;
+    const now = this.now();
+    const day = dayNumber(now, e.meta.dayOffsetHours);
+    let w = await this.store.getWallet(userId);
+    const user = (await this.store.getUser(userId))!;
+    if (w.meta.maxLevelAt === undefined) {
+      // игроки до этапа меты: дни застревания считаем с первого открытия экрана
+      w = (await this.store.transact(userId, (x) => ({ meta: { ...x.meta, maxLevelAt: now } })))!;
+    }
+    const m = w.meta;
+    const count = m.loginCount ?? 0;
+    const claimedToday = m.loginDay === day;
+    // показываем текущую неделю календаря: 7 наград, позиция — сколько из них уже получено
+    const weekStart = Math.floor((claimedToday ? count - 1 : count) / 7) * 7;
+    const stars = await this.episodeStars(userId);
+    const spins = m.wheelDay === day ? m.wheelSpins ?? 0 : 0;
+    return {
+      day, nextDayAt: (day + 1) * 86_400_000 - e.meta.dayOffsetHours * 3600_000,
+      login: {
+        count, claimedToday, position: count - weekStart,
+        rewards: CALENDAR.map((_, i) => calendarReward(weekStart + i + 1, m.cards ?? {})),
+      },
+      tasks: todayTasks(m, userId, day),
+      chests: [...Array(Math.min(episodeOf(user.maxLevel), Math.ceil(this.levels.size / LEVELS_PER_EPISODE))).keys()].map((i) => {
+        const episode = i + 1;
+        const s = stars.get(episode) ?? 0;
+        return {
+          episode, stars: s,
+          tiers: CHEST_TIERS.map((tier) => ({ tier, reward: CHESTS[tier], claimed: (m.chests ?? []).includes(`${episode}:${tier}`), available: s >= tier })),
+        };
+      }),
+      wheel: {
+        free: spins === 0, extraLeft: Math.max(0, e.meta.wheelExtraSpins - Math.max(0, spins - 1)), price: e.meta.wheelSpinPrice,
+        prizes: WHEEL.map((p) => ({ id: p.id, weight: p.weight, reward: p.reward })),
+      },
+      cards: m.cards ?? {},
+      stuck: this.isStuck(m, user.maxLevel, e, now) ? { levelId: user.maxLevel, reward: STUCK_REWARD } : null,
+    };
+  }
+
+  /**
+   * Выдать награду меты одной транзакцией: check решает по кошельку, можно ли (null — нельзя),
+   * и возвращает награду и новое состояние меты.
+   */
+  private async claim(userId: number, check: (w: Wallet) => { reward: Reward; meta: MetaState; cost?: number } | ServiceError): Promise<MetaClaim> {
+    const now = this.now();
+    let reward: Reward | null = null;
+    let error: ServiceError | null = null;
+    const w = await this.store.transact(userId, (x) => {
+      const r = check(x);
+      if (r instanceof ServiceError) {
+        error = r;
+        return null;
+      }
+      reward = r.reward;
+      const g = grant(r.cost ? { ...x, crystals: x.crystals - r.cost } : x, r.reward, now);
+      return { ...(r.cost ? { crystals: x.crystals - r.cost } : {}), ...g, meta: addCard(r.meta, r.reward) };
+    });
+    if (error) throw error;
+    return { reward: reward!, wallet: this.walletView(w!), lives: view(w!.lives, now), meta: await this.metaView(userId) };
+  }
+
+  /** Календарь входа: одна награда в игровой день; пропуск дня цикл не сбрасывает. */
+  async claimLogin(userId: number): Promise<MetaClaim> {
+    const e = (await this.configFor(userId)).economy;
+    const day = dayNumber(this.now(), e.meta.dayOffsetHours);
+    const r = await this.claim(userId, (w) => {
+      if (w.meta.loginDay === day) return new ServiceError('already', 409);
+      const n = (w.meta.loginCount ?? 0) + 1;
+      return { reward: calendarReward(n, w.meta.cards ?? {}), meta: { ...w.meta, loginDay: day, loginCount: n } };
+    });
+    await this.track(userId, 'login_reward', null, { n: r.meta.login.count, reward: r.reward });
+    return r;
+  }
+
+  async claimTask(userId: number, slot: unknown): Promise<MetaClaim> {
+    if (!Number.isInteger(slot) || (slot as number) < 0 || (slot as number) > 2) throw new ServiceError('bad_request', 400);
+    const i = slot as number;
+    const e = (await this.configFor(userId)).economy;
+    const day = dayNumber(this.now(), e.meta.dayOffsetHours);
+    let kind: TaskKind | null = null;
+    const r = await this.claim(userId, (w) => {
+      const tasks = todayTasks(w.meta, userId, day);
+      const t = tasks[i]!;
+      if (t.claimed) return new ServiceError('already', 409);
+      if (t.progress < t.target) return new ServiceError('not_done', 409);
+      kind = t.kind;
+      return { reward: t.reward, meta: { ...w.meta, taskDay: day, tasks: tasks.map((x, j) => (j === i ? { ...x, claimed: true } : x)) } };
+    });
+    await this.track(userId, 'task_claimed', null, { kind, slot: i });
+    return r;
+  }
+
+  async claimChest(userId: number, episode: unknown, tier: unknown): Promise<MetaClaim> {
+    if (!Number.isInteger(episode) || !(CHEST_TIERS as readonly unknown[]).includes(tier)) throw new ServiceError('bad_request', 400);
+    const stars = (await this.episodeStars(userId)).get(episode as number) ?? 0;
+    const key = `${episode}:${tier}`;
+    const r = await this.claim(userId, (w) => {
+      if ((w.meta.chests ?? []).includes(key)) return new ServiceError('already', 409);
+      if (stars < (tier as number)) return new ServiceError('not_done', 409, { stars });
+      return { reward: CHESTS[tier as ChestTier], meta: { ...w.meta, chests: [...(w.meta.chests ?? []), key] } };
+    });
+    await this.track(userId, 'chest_opened', null, { episode, tier });
+    return r;
+  }
+
+  /** Колесо: первый спин дня бесплатный, ещё несколько — за кристаллы. Вероятности открыты (WHEEL). */
+  async spinWheel(userId: number): Promise<MetaClaim & { prize: string }> {
+    const e = (await this.configFor(userId)).economy;
+    const day = dayNumber(this.now(), e.meta.dayOffsetHours);
+    const prize = WHEEL[wheelPrize(this.random())]!;
+    let paid = 0;
+    const r = await this.claim(userId, (w) => {
+      const spins = w.meta.wheelDay === day ? w.meta.wheelSpins ?? 0 : 0;
+      if (spins > 0) {
+        if (spins - 1 >= e.meta.wheelExtraSpins) return new ServiceError('limit', 409);
+        if (w.crystals < e.meta.wheelSpinPrice) return new ServiceError('no_crystals', 402, { price: e.meta.wheelSpinPrice });
+        paid = e.meta.wheelSpinPrice;
+      }
+      return { reward: prize.reward, meta: { ...w.meta, wheelDay: day, wheelSpins: spins + 1 }, cost: paid };
+    });
+    await this.track(userId, 'wheel_spin', null, { prize: prize.id, paid });
+    return { ...r, prize: prize.id };
+  }
+
+  /** PRD «Защита от выгорания»: застрял на уровне 3+ дня — бесплатный бустер, один раз на уровень. */
+  async claimStuck(userId: number): Promise<MetaClaim> {
+    const e = (await this.configFor(userId)).economy;
+    const user = (await this.store.getUser(userId))!;
+    const now = this.now();
+    const r = await this.claim(userId, (w) => {
+      if (!this.isStuck(w.meta, user.maxLevel, e, now)) return new ServiceError('not_available', 409);
+      return { reward: STUCK_REWARD, meta: { ...w.meta, stuckGift: user.maxLevel } };
+    });
+    await this.track(userId, 'stuck_gift', user.maxLevel, {});
+    return r;
   }
 
   // ---------- магазин ----------
@@ -736,6 +912,7 @@ export class GameService {
     await this.store.closeAttempt(attempt.id, attempt.userId, {
       status, finishedAt: now, score, stars: 0, swaps, lives: user.lives, progress, maxLevel: user.maxLevel,
     });
+    if (status === 'lost' && !attempt.roomId && score > 0) await this.bumpTasks(attempt.userId, { score });
     // PRD: level_fail — с оставшимися ходами и прогрессом цели
     await this.track(attempt.userId, attempt.roomId ? 'room_fail' : 'level_fail', attempt.levelId, {
       ...(attempt.roomId ? { roomId: attempt.roomId } : {}),
@@ -757,6 +934,28 @@ export function roomLevelPool(levels: ReadonlyMap<number, LevelDef>, creatorMaxL
 }
 
 const MAX_LIVES_VIEW = 5;
+const STUCK_REWARD: Reward = { items: { hammer: 1, beamBomb: 1 } };
+
+export interface MetaView {
+  readonly day: number;
+  readonly nextDayAt: number;
+  readonly login: { readonly count: number; readonly claimedToday: boolean; readonly position: number; readonly rewards: readonly Reward[] };
+  readonly tasks: readonly TaskState[];
+  readonly chests: readonly {
+    readonly episode: number; readonly stars: number;
+    readonly tiers: readonly { readonly tier: number; readonly reward: Reward; readonly claimed: boolean; readonly available: boolean }[];
+  }[];
+  readonly wheel: { readonly free: boolean; readonly extraLeft: number; readonly price: number; readonly prizes: readonly { readonly id: string; readonly weight: number; readonly reward: Reward }[] };
+  readonly cards: Readonly<Record<string, number>>;
+  readonly stuck: { readonly levelId: number; readonly reward: Reward } | null;
+}
+
+export interface MetaClaim {
+  readonly reward: Reward;
+  readonly wallet: WalletView;
+  readonly lives: LivesView;
+  readonly meta: MetaView;
+}
 
 /** Варианты экспериментов в событиях — для разбивки отчёта. */
 const expProps = (eff: Effective) => (Object.keys(eff.variants).length > 0 ? { exp: eff.variants } : {});

@@ -2,7 +2,12 @@ import Phaser from 'phaser';
 import { parseLevel } from '@sakura/core';
 import type { LevelDef, Match3Game } from '@sakura/core';
 import { ApiError, createApi } from './api.ts';
-import type { Api, Auth, ClientEvent, Item, LivesView, ProductId, ShopView, WalletView } from './api.ts';
+import type { Api, Auth, ClientEvent, Item, LivesView, MetaView, ProductId, ShopView, WalletView } from './api.ts';
+import { metaBadges } from './meta.ts';
+import { DailyScene } from './scenes/DailyScene.ts';
+import type { DailyData, MetaClaimRequest } from './scenes/DailyScene.ts';
+import { WheelScene } from './scenes/WheelScene.ts';
+import type { WheelData } from './scenes/WheelScene.ts';
 import { t } from './i18n.ts';
 import { BootScene } from './scenes/BootScene.ts';
 import { GameScene } from './scenes/GameScene.ts';
@@ -74,10 +79,12 @@ const progress = {
   wallet: null as WalletView | null,
 };
 let shopView: ShopView | null = null;
+let metaView: MetaView | null = null;
 
-type SceneKey = 'game' | 'message' | 'map' | 'room' | 'start' | 'shop';
-function show(scene: SceneKey, data: GameSceneData | MessageData | MapData | RoomData | StartData | ShopData): void {
-  for (const key of ['game', 'message', 'map', 'room', 'start', 'shop']) if (key !== scene && game.scene.isActive(key)) game.scene.stop(key);
+const SCENES = ['game', 'message', 'map', 'room', 'start', 'shop', 'daily', 'wheel'] as const;
+type SceneKey = (typeof SCENES)[number];
+function show(scene: SceneKey, data: GameSceneData | MessageData | MapData | RoomData | StartData | ShopData | DailyData | WheelData): void {
+  for (const key of SCENES) if (key !== scene && game.scene.isActive(key)) game.scene.stop(key);
   if (game.scene.isActive(scene)) game.scene.getScene(scene)!.scene.restart(data);
   else game.scene.start(scene, data);
 }
@@ -97,7 +104,59 @@ function showMap(focus?: number): void {
     onShare: api ? () => void shareToChat('challenge', () => showMap(focus)) : null,
     crystals: progress.wallet?.crystals ?? null,
     onShop: api && shopView ? () => openShop(() => showMap(focus)) : null,
+    onDaily: api && metaView ? () => openDaily(() => showMap(focus)) : null,
+    onWheel: api && metaView ? () => openWheel(() => showMap(focus)) : null,
+    ...(metaView ? { dailyBadge: metaBadges(metaView).daily, wheelBadge: metaBadges(metaView).wheel } : {}),
   });
+}
+
+/** Награды дня: календарь, задания, сундуки. */
+function openDaily(back: () => void): void {
+  if (!metaView) return back();
+  show('daily', { theme, dpr, meta: metaView, levelCount: progress.levelCount, onClaim: claimMeta, onClose: back });
+}
+
+function openWheel(back: () => void): void {
+  if (!metaView || !progress.wallet) return back();
+  show('wheel', {
+    theme, dpr, meta: metaView, crystals: progress.wallet.crystals, onClose: back,
+    onSpin: async () => {
+      try {
+        const r = await api!.spin();
+        applyClaim(r);
+        return { prize: r.prize, reward: r.reward, meta: r.meta, crystals: r.wallet.crystals };
+      } catch (e) {
+        return { error: e instanceof ApiError && e.code === 'no_crystals' ? t.economy.notEnough : 'Не получилось — попробуй ещё раз' };
+      }
+    },
+  });
+}
+
+function applyClaim(r: { wallet: WalletView; lives: LivesView; meta: MetaView }): void {
+  progress.wallet = r.wallet;
+  progress.lives = livesToClient(r.lives);
+  metaView = r.meta;
+}
+
+async function claimMeta(c: MetaClaimRequest) {
+  if (!api) return { error: 'Нет связи с сервером' };
+  try {
+    const r = c.kind === 'login' ? await api.claimLogin()
+      : c.kind === 'task' ? await api.claimTask(c.slot)
+        : c.kind === 'chest' ? await api.claimChest(c.episode, c.tier)
+          : await api.claimStuck();
+    applyClaim(r);
+    return { meta: r.meta, reward: r.reward };
+  } catch {
+    // уже забрано на другом устройстве и т. п. — покажем актуальное
+    metaView = await api.meta().catch(() => metaView);
+    return { ...(metaView ? { meta: metaView } : {}), error: 'Эта награда уже недоступна' };
+  }
+}
+
+/** Мета меняется от игр (задания, звёзды для сундуков): обновить к возврату на карту. */
+async function refreshMeta(): Promise<void> {
+  if (api) metaView = await api.meta().catch(() => metaView);
 }
 
 /** Экран старта уровня с бустерами (онлайн); офлайн — сразу в игру. */
@@ -302,6 +361,8 @@ function startScene(
     progress.wallet = r.wallet;
     // в комнате звёзды не идут в прогресс карты
     if (r.result === 'won' && !roomId) recordStars(level.id, r.stars);
+    // задания и сундуки зависят от партий — к возврату на карту значки будут свежими
+    void refreshMeta();
     return {
       won: r.result === 'won', score: r.score, stars: r.stars, lives: progress.lives,
       ...(r.room ? { room: { place: r.room.place, players: r.room.players } } : {}),
@@ -374,7 +435,7 @@ async function boot(): Promise<void> {
       progress.lives = livesToClient(me.lives);
       progress.wallet = me.wallet;
       levelOverrides = me.levelOverrides ?? {};
-      shopView = await api.shop().catch(() => null);
+      [shopView, metaView] = await Promise.all([api.shop().catch(() => null), api.meta().catch(() => null)]);
       track({ name: 'session_start', props: { platform: telegram.inTelegram ? 'telegram' : 'web' } });
     } catch {
       api = null;
@@ -392,6 +453,8 @@ async function boot(): Promise<void> {
   // ?level=N — сразу в уровень (разработка, ссылки); иначе — карта
   const wanted = Number(params.get('level') ?? 0);
   if (wanted >= 1) await play(Math.min(wanted, Math.min(progress.maxLevel, progress.levelCount)));
+  // награда за вход ещё не забрана — сразу календарь (раз в день); новичка сначала ведём в обучение
+  else if (metaView && !metaView.login.claimedToday && progress.maxLevel > 3) openDaily(() => showMap());
   else showMap();
 }
 
@@ -402,6 +465,8 @@ game.events.once('ready', () => {
   game.scene.add('room', RoomScene, false);
   game.scene.add('start', StartScene, false);
   game.scene.add('shop', ShopScene, false);
+  game.scene.add('daily', DailyScene, false);
+  game.scene.add('wheel', WheelScene, false);
   // Boot рисует текстуры и сразу передаёт управление
   game.scene.add('boot', BootScene, true, { onReady: () => void boot() });
 });

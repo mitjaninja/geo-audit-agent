@@ -28,6 +28,8 @@ export interface Economy {
   readonly starter: { readonly stars: number; readonly crystals: number; readonly items: Partial<Record<Item, number>>; readonly infiniteLivesMs: number; readonly afterLevel: number; readonly windowMs: number };
   /** Копилка: копится за победы, разбить за Stars. */
   readonly piggy: { readonly perWin: number; readonly max: number; readonly stars: number; readonly minToBreak: number };
+  /** Мета: смена игрового дня (часовой пояс), доп. спины колеса, помощь застрявшему. */
+  readonly meta: { readonly dayOffsetHours: number; readonly wheelSpinPrice: number; readonly wheelExtraSpins: number; readonly stuckDays: number };
 }
 
 export const DEFAULT_ECONOMY: Economy = {
@@ -48,6 +50,7 @@ export const DEFAULT_ECONOMY: Economy = {
     infiniteLivesMs: 2 * 3600_000, afterLevel: 15, windowMs: 48 * 3600_000,
   },
   piggy: { perWin: 3, max: 120, stars: 150, minToBreak: 30 },
+  meta: { dayOffsetHours: 3, wheelSpinPrice: 9, wheelExtraSpins: 3, stuckDays: 3 },
 };
 
 /** Цена n-й докупки ходов в попытке (0 — первая); дальше последней ступени — последняя цена. */

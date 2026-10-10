@@ -101,6 +101,17 @@ export function createApp(deps: HttpDeps): Server {
       if (!Number.isInteger(levelId)) throw new HttpError(400, 'bad_request');
       return send(res, 200, await deps.service.startAttempt(user.id, levelId as number, Array.isArray(boosters) ? boosters : []));
     }
+    if (path.startsWith('/api/meta')) {
+      if (method === 'GET' && path === '/api/meta') return send(res, 200, await deps.service.metaView(user.id));
+      if (method === 'POST' && path === '/api/meta/login') return send(res, 200, await deps.service.claimLogin(user.id));
+      if (method === 'POST' && path === '/api/meta/wheel') return send(res, 200, await deps.service.spinWheel(user.id));
+      if (method === 'POST' && path === '/api/meta/stuck') return send(res, 200, await deps.service.claimStuck(user.id));
+      if (method === 'POST' && path === '/api/meta/tasks') return send(res, 200, await deps.service.claimTask(user.id, (await readJson(req)).slot));
+      if (method === 'POST' && path === '/api/meta/chests') {
+        const { episode, tier } = await readJson(req);
+        return send(res, 200, await deps.service.claimChest(user.id, episode, tier));
+      }
+    }
     if (method === 'GET' && path === '/api/admin/report') {
       if (!deps.report || !deps.adminIds?.includes(user.id)) throw new HttpError(403, 'forbidden');
       return send(res, 200, await deps.report());
