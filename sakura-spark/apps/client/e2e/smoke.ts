@@ -221,22 +221,24 @@ try {
     await page.context().close();
   }
 
-  console.log('map: «В чат» outside Telegram explains where sharing works');
+  console.log('map: tournament for 1 hour — share screen outside Telegram: apps, story, copy link');
   {
     const { page, errors } = await open('?devUser=12');
     await mapReady(page);
     await clickCanvas(page, (await g(page, 'm.shareButton')) as { x: number; y: number });
-    // сначала выбор режима: челлендж, командный фонарь, дуэль
+    // вне Telegram: «Поделиться», сторис в соцсетях, ссылка и «Назад» (чат и сторис Telegram — только в клиенте)
     await page.waitForFunction(() => (globalThis as any).__sakuraChoice?.scene.isActive() && (globalThis as any).__sakuraChoice.buttons.length === 4);
     await page.waitForTimeout(200);
-    await page.screenshot({ path: `${OUT}/24-chat-modes.png` });
-    await clickCanvas(page, (await g(page, 'globalThis.__sakuraChoice.buttons.find((b) => b.label.includes("Дуэль"))')) as { x: number; y: number });
+    await page.screenshot({ path: `${OUT}/24-tournament-share.png` });
+    const rooms = (store as any).db.prepare("SELECT mode, expires_at - created_at AS ttl FROM rooms WHERE creator_id = 12").all();
+    assert.deepEqual(rooms.map((r: any) => [r.mode, r.ttl]), [['challenge', 3600_000]]);
+    await clickCanvas(page, (await g(page, 'globalThis.__sakuraChoice.buttons.find((b) => b.label.includes("Скопировать"))')) as { x: number; y: number });
     await page.waitForFunction(() => (globalThis as any).__sakuraMessage?.scene.isActive());
     assert.deepEqual(errors, []);
     await page.context().close();
   }
 
-  console.log('chat modes: team lantern progress and a duel accepted from the chat link');
+  console.log('old chat rooms still play: team lantern progress and a duel accepted from the chat link');
   {
     await service.login({ id: 40, firstName: 'Пон' });
     await service.login({ id: 41, firstName: 'Сэцу' });

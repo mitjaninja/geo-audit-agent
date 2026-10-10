@@ -49,6 +49,7 @@ const server = createApp({
   log,
   adminIds: config.adminIds,
   report,
+  publicUrl: webAppUrl.replace(/\/$/, ''),
 });
 
 server.listen(config.port, () => {

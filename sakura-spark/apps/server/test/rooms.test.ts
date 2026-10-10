@@ -187,20 +187,45 @@ test('limit: 5 cards per day that reached a chat', async () => {
   assert.equal((await call('POST', '/api/rooms', { mode: 'challenge' })).status, 200);
 });
 
-test('inline mode: challenge, team lantern, duel and help cards with the right buttons', async () => {
+test('inline mode: the 1-hour tournament and help cards with the right buttons', async () => {
   await webhook({ inline_query: { id: 'q1', from: { id: 5, first_name: 'Рэн' }, query: '' } });
   const answer = calls.find((c) => c.method === 'answerInlineQuery')!;
   assert.equal(answer.params.is_personal, true);
-  const [ch, team, duel, help] = answer.params.results;
-  assert.match(team.input_message_content.message_text, /Командный фонарь[\s\S]*0 \/ 2 500 огоньков/);
-  assert.match(duel.input_message_content.message_text, /Дуэль[\s\S]*Ждём соперника/);
-  assert.equal(duel.reply_markup.inline_keyboard[0][0].url, `https://t.me/sk_bot?start=${duel.id}`);
-  assert.match(ch.input_message_content.message_text, /Челлендж чата/);
+  assert.equal(answer.params.results.length, 2);
+  const [ch, help] = answer.params.results;
+  assert.match(ch.input_message_content.message_text, /Турнир на 1 час[\s\S]*до конца 60 мин/);
   assert.equal(ch.reply_markup.inline_keyboard[0][0].url, `https://t.me/sk_bot?start=${ch.id}`);
   assert.equal(ch.reply_markup.inline_keyboard[1][0].callback_data, `top:${ch.id}`);
   assert.match(help.input_message_content.message_text, /Рэн просит жизнь/);
   assert.equal(help.reply_markup.inline_keyboard[0][0].callback_data, `gift:${help.id}`);
   assert.ok(await store.getUser(5), 'the inline user is registered');
+});
+
+test('the tournament lasts an hour; team and duel rooms are no longer created', async () => {
+  const created = await call('POST', '/api/rooms', { mode: 'challenge' });
+  assert.equal(created.status, 200);
+  assert.equal((await store.getRoom(created.body.roomId))!.expiresAt - clock, 3600_000);
+  assert.equal((await call('POST', '/api/rooms', { mode: 'team' })).status, 400);
+  assert.equal((await call('POST', '/api/rooms', { mode: 'duel' })).status, 400);
+});
+
+test('share link /t/<room>: preview for social networks and a redirect into the room', async () => {
+  server.close();
+  server = createApp({ service: (chat as any).deps.service, botToken: '1:t', devAuth: true, now: () => clock, bot: { chat, secret: 's' }, publicUrl: 'https://game.example' });
+  await new Promise<void>((r) => server.listen(0, r));
+  url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const created = await call('POST', '/api/rooms', { mode: 'challenge' });
+  assert.equal(created.body.shareUrl, `https://game.example/t/${created.body.roomId}`);
+  const page = await fetch(`${url}/t/${created.body.roomId}`, { headers: { 'accept-language': 'en-US,en;q=0.9' } });
+  assert.equal(page.status, 200);
+  const html = await page.text();
+  assert.match(html, /og:title" content="1-hour tournament in Sakura Spark"/);
+  assert.match(html, /og:image" content="https:\/\/game.example\/art\/share_cover.jpg"/);
+  assert.ok(html.includes(`https://t.me/sk_bot?start=${created.body.roomId}`));
+  // неизвестная комната — всё равно ведёт в игру, а не в 404
+  const gone = await (await fetch(`${url}/t/rNope`)).text();
+  assert.ok(gone.includes('https://t.me/sk_bot?start=play'));
+  assert.ok(!gone.includes('<script>alert'));
 });
 
 test('/start with a room opens the game on that room; unknown room falls back', async () => {

@@ -726,7 +726,7 @@ export class GameService {
 
   // ---------- чат-режимы ----------
 
-  /** Создать комнату: челлендж (общий уровень и сид на 24 ч) или просьбу о жизни. Лимит 5 карточек в день. */
+  /** Создать комнату: турнир (общий уровень и сид на час) или просьбу о жизни. Лимит 5 карточек в день. */
   async createRoom(userId: number, mode: RoomMode): Promise<RoomRow> {
     const user = (await this.store.getUser(userId))!;
     const now = this.now();
@@ -737,7 +737,8 @@ export class GameService {
     const seed = this.newSeed();
     const pool = roomLevelPool(this.levels, user.maxLevel);
     const c = (await this.configFor(userId)).economy.chat;
-    const ttl = mode === 'team' ? c.teamHours * 3600_000 : mode === 'duel' ? c.duelMinutes * 60_000 : ROOM_TTL_MS;
+    const ttl = mode === 'team' ? c.teamHours * 3600_000 : mode === 'duel' ? c.duelMinutes * 60_000
+      : mode === 'challenge' ? c.challengeMinutes * 60_000 : ROOM_TTL_MS;
     const room: RoomRow = {
       id: this.newRoomId(), mode, creatorId: userId, creatorName: user.firstName,
       levelId: mode === 'help' ? 1 : pool[seed % pool.length] ?? 1, seed,

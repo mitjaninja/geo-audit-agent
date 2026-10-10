@@ -8,6 +8,7 @@ import type { TelegramUser } from './auth.ts';
 import { webhookToken } from './bot.ts';
 import type { ChatBot } from './chat.ts';
 import { ServiceError } from './service.ts';
+import { textsFor } from './texts.ts';
 import type { GameService } from './service.ts';
 
 export interface HttpDeps {
@@ -21,12 +22,14 @@ export interface HttpDeps {
   /** GET /api/admin/report — только для adminIds (вход тем же initData). */
   readonly adminIds?: readonly number[];
   readonly report?: () => Promise<unknown>;
+  /** Публичный адрес игры без «/» в конце — для ссылок-диплинков /t/<комната>. */
+  readonly publicUrl?: string;
 }
 
 const MAX_BODY = 64 * 1024;
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
-  '.json': 'application/json', '.png': 'image/png', '.svg': 'image/svg+xml', '.webp': 'image/webp',
+  '.json': 'application/json', '.png': 'image/png', '.svg': 'image/svg+xml', '.webp': 'image/webp', '.jpg': 'image/jpeg',
   '.woff2': 'font/woff2', '.mp3': 'audio/mpeg', '.ogg': 'audio/ogg', '.ico': 'image/x-icon',
 };
 
@@ -166,7 +169,8 @@ export function createApp(deps: HttpDeps): Server {
     }
     if (method === 'POST' && path === '/api/rooms') {
       const { mode } = await readJson(req);
-      if (mode !== 'challenge' && mode !== 'help' && mode !== 'team' && mode !== 'duel') throw new HttpError(400, 'bad_request');
+      // новые комнаты — только турнир на час и просьба о жизни; командный фонарь и дуэль доигрывают старые комнаты
+      if (mode !== 'challenge' && mode !== 'help') throw new HttpError(400, 'bad_request');
       const room = await deps.service.createRoom(user.id, mode);
       // карточку для shareMessage готовит бот; без бота (разработка) или при сбое Bot API — только ссылка
       const preparedMessageId = deps.bot
@@ -175,7 +179,11 @@ export function createApp(deps: HttpDeps): Server {
           return null;
         })
         : null;
-      return send(res, 200, { roomId: room.id, mode, levelId: room.levelId, preparedMessageId, link: deps.bot?.chat.link(room.id) ?? null });
+      return send(res, 200, {
+        roomId: room.id, mode, levelId: room.levelId, preparedMessageId, link: deps.bot?.chat.link(room.id) ?? null,
+        // страница-диплинк с превью для соцсетей и сторис: /t/<комната> ведёт в Telegram
+        shareUrl: deps.publicUrl ? `${deps.publicUrl}/t/${room.id}` : null,
+      });
     }
     const roomPath = /^\/api\/rooms\/(r[A-Za-z0-9]{1,32})(\/attempts)?$/.exec(path);
     if (roomPath && method === 'GET' && !roomPath[2]) return send(res, 200, await deps.service.roomView(roomPath[1]!, user.id));
@@ -217,11 +225,45 @@ export function createApp(deps: HttpDeps): Server {
     createReadStream(file).pipe(res);
   }
 
+  /**
+   * Диплинк турнира для соцсетей и сторис: превью (og:*) с артом и сразу переход в Telegram —
+   * в ту же комнату, что и кнопка «Играть» на карточке в чате.
+   */
+  async function landing(req: IncomingMessage, res: ServerResponse, roomId: string): Promise<void> {
+    const tx = textsFor(String(req.headers['accept-language'] ?? '').split(',')[0]);
+    const room = await deps.service.getRoom(roomId);
+    const target = deps.bot ? deps.bot.chat.link(room ? room.id : undefined) : `${deps.publicUrl ?? ''}/`;
+    const description = room ? tx.landing.description(room.creatorName || tx.card.player, room.levelId) : tx.landing.game;
+    const base = deps.publicUrl ?? '';
+    const attr = (v: string) => v.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+    const html = `<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${attr(tx.landing.title)}</title>
+<meta property="og:type" content="website">
+<meta property="og:title" content="${attr(tx.landing.title)}">
+<meta property="og:description" content="${attr(description)}">
+<meta property="og:image" content="${attr(`${base}/art/share_cover.jpg`)}">
+<meta property="og:image:width" content="1200"><meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta http-equiv="refresh" content="1;url=${attr(target)}">
+<style>body{margin:0;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;
+background:#3a2a5a url(${attr(`${base}/art/district_14.webp`)}) center/cover;font:16px system-ui,sans-serif;color:#fff;text-align:center}
+.c{margin:0 16px 48px;padding:20px;border-radius:24px;background:rgba(40,24,64,.82);max-width:420px}
+a{display:block;margin-top:16px;padding:14px;border-radius:24px;background:#ff7eb6;color:#fff;font-weight:700;text-decoration:none}</style>
+</head><body><div class="c"><h1 style="margin:0 0 8px;font-size:22px">${attr(tx.landing.title)}</h1>
+<div>${attr(description)}</div><a href="${attr(target)}">${attr(tx.landing.open)}</a></div>
+<script>location.replace(${JSON.stringify(target).replace(/</g, '\\u003c')})</script></body></html>`;
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-cache' });
+    res.end(html);
+  }
+
   return createServer((req, res) => {
     const path = new URL(req.url ?? '/', 'http://x').pathname;
+    const share = /^\/t\/(r[A-Za-z0-9]{1,32})\/?$/.exec(path);
     // всё через промис: синхронная ошибка не должна ронять процесс
     const handled = new Promise<void>((ok) => {
-      ok(path.startsWith('/api/') || path.startsWith('/telegram/') ? api(req, res, path) : serveStatic(req, res, path));
+      ok(share && req.method === 'GET' ? landing(req, res, share[1]!)
+        : path.startsWith('/api/') || path.startsWith('/telegram/') ? api(req, res, path) : serveStatic(req, res, path));
     });
     handled.catch((e: unknown) => {
       if (e instanceof HttpError) return send(res, e.status, { error: e.code, ...e.details });

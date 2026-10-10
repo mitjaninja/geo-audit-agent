@@ -175,6 +175,8 @@ export interface CreatedRoom {
   /** Карточка для Telegram.WebApp.shareMessage; null — бот не настроен (разработка). */
   readonly preparedMessageId: string | null;
   readonly link: string | null;
+  /** Диплинк /t/<комната> с превью — для соцсетей, сторис и «Поделиться» вне Telegram. */
+  readonly shareUrl?: string | null;
 }
 
 export interface Reward {

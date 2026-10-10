@@ -81,6 +81,7 @@ export interface Texts {
     readonly nobody: string;
     readonly challengeEnded: string;
     readonly played: (n: number, hours: number) => string;
+    readonly playedMinutes: (n: number, minutes: number) => string;
     readonly boosted: string;
     readonly teamBody: (creator: string) => string;
     readonly teamProgress: (n: number, target: number) => string;
@@ -100,6 +101,13 @@ export interface Texts {
     readonly gifts: (n: number, max: number) => string;
     readonly giftResult: Readonly<Record<'ok' | 'already' | 'full' | 'own' | 'expired' | 'not_found', string>>;
     readonly refreshed: string;
+  };
+  /** Страница-диплинк /t/<комната> для соцсетей и сторис: превью и переход в Telegram. */
+  readonly landing: {
+    readonly title: string;
+    readonly description: (creator: string, level: number) => string;
+    readonly game: string;
+    readonly open: string;
   };
 }
 
@@ -132,7 +140,7 @@ const ru: Texts = {
     overtook: (n, level) => `${n} обогнал тебя на уровне ${level}! Отыграешься?`,
     livesBack: 'Жизни восстановились — Мика ждёт на карте! ❤ ×5',
     raceFirst: (n) => `${n} первым донёс фонарь в гонке! Ещё можно занять 2-е и 3-е место`,
-    challengeEnded: (place, players, c) => `Челлендж чата завершён: ты ${place}-й из ${players}. Награда: ${c ? `${c} 💎 и ` : ''}бустер «Перемешать»`,
+    challengeEnded: (place, players, c) => `Турнир завершён: ты ${place}-й из ${players}. Награда: ${c ? `${c} 💎 и ` : ''}бустер «Перемешать»`,
     teamLit: 'Командный фонарь зажжён! Сундук: 3 💎, молот и радужный кристалл',
     duelWon: 'Ты победил в дуэли! Награда — радужный кристалл',
   },
@@ -147,8 +155,8 @@ const ru: Texts = {
     pass: 'Премиум-дорожка пропуска: бустеры, кристаллы и рамки. Подписка на 30 дней, продлевается сама',
   },
   card: {
-    challengeTitle: 'Челлендж чата',
-    challengeDescription: (l) => `Уровень ${l} · кто наберёт больше очков за 24 часа`,
+    challengeTitle: 'Турнир на 1 час',
+    challengeDescription: (l) => `Уровень ${l} · кто наберёт больше очков за час`,
     teamTitle: 'Командный фонарь',
     teamDescription: (t) => `Весь чат вместе зажигает ${t} огоньков за 48 часов`,
     duelTitle: 'Дуэль',
@@ -161,7 +169,7 @@ const ru: Texts = {
     playGame: '🌸 Играть в Sakura Spark',
     limitTitle: 'На сегодня хватит карточек',
     limitText: 'Можно отправить 5 карточек в день — завтра будут новые 🌸',
-    roomStart: (c, l) => `${c} зовёт в челлендж чата: уровень ${l}. У всех одна и та же раскладка — кто наберёт больше очков? Первая попытка бесплатно.`,
+    roomStart: (c, l) => `${c} зовёт в турнир на 1 час: уровень ${l}. У всех одна и та же раскладка — кто наберёт больше очков? Первая попытка бесплатно.`,
     teamStart: (c) => `${c} зажигает командный фонарь: каждая твоя партия добавляет огоньки. Цель выполнена — сундук всем, кто помог.`,
     duelStart: (c, l) => `${c} вызывает на дуэль: уровень ${l}, одна попытка. Побеждает тот, кто пройдёт за меньшее число ходов.`,
     roomGone: 'Эта комната уже закрыта. Но играть можно всегда 🌸',
@@ -169,8 +177,9 @@ const ru: Texts = {
     level: (n) => `уровень ${n}`,
     challengeBody: (c) => `${c} зовёт: кто наберёт больше очков? Первая попытка бесплатно.`,
     nobody: 'Пока никто не сыграл — будь первым!',
-    challengeEnded: 'Челлендж завершён 🏁',
+    challengeEnded: 'Турнир завершён 🏁',
     played: (n, h) => `Сыграли: ${n} · до конца ${h} ч`,
+    playedMinutes: (n, m) => `Сыграли: ${n} · до конца ${m} мин`,
     boosted: '⚡ — с бустерами',
     teamBody: (c) => `${c} зовёт весь чат: зажжём фонарь вместе? Каждая партия добавляет огоньки.`,
     teamProgress: (n, t) => `${fmt(n, 'ru-RU')} / ${fmt(t, 'ru-RU')} огоньков`,
@@ -193,6 +202,12 @@ const ru: Texts = {
       own: 'Себе подарить нельзя 🙂', expired: 'Просьба устарела', not_found: 'Карточка не найдена',
     },
     refreshed: 'Рейтинг обновлён',
+  },
+  landing: {
+    title: 'Турнир на 1 час в Sakura Spark',
+    description: (c, l) => `${c} зовёт в турнир: уровень ${l}. Кто наберёт больше очков за час? Первая попытка бесплатно.`,
+    game: 'Аниме match-3 в Telegram: фонари, сакура и сотни уровней',
+    open: 'Открыть в Telegram',
   },
 };
 
@@ -225,7 +240,7 @@ const en: Texts = {
     overtook: (n, level) => `${n} beat your score on level ${level}! Take it back?`,
     livesBack: 'Your lives are full again — Mika is waiting on the map! ❤ ×5',
     raceFirst: (n) => `${n} carried the lantern home first! 2nd and 3rd place are still open`,
-    challengeEnded: (place, players, c) => `The chat challenge is over: you’re #${place} of ${players}. Reward: ${c ? `${c} 💎 and ` : ''}a Shuffle booster`,
+    challengeEnded: (place, players, c) => `The tournament is over: you’re #${place} of ${players}. Reward: ${c ? `${c} 💎 and ` : ''}a Shuffle booster`,
     teamLit: 'The team lantern is lit! Chest: 3 💎, a hammer and a rainbow crystal',
     duelWon: 'You won the duel! Reward — a rainbow crystal',
   },
@@ -240,8 +255,8 @@ const en: Texts = {
     pass: 'Premium pass track: boosters, crystals and frames. A 30-day subscription that renews itself',
   },
   card: {
-    challengeTitle: 'Chat challenge',
-    challengeDescription: (l) => `Level ${l} · who scores the most in 24 hours`,
+    challengeTitle: '1-hour tournament',
+    challengeDescription: (l) => `Level ${l} · who scores the most in an hour`,
     teamTitle: 'Team lantern',
     teamDescription: (t) => `The whole chat lights ${t} lights together in 48 hours`,
     duelTitle: 'Duel',
@@ -254,7 +269,7 @@ const en: Texts = {
     playGame: '🌸 Play Sakura Spark',
     limitTitle: 'That’s enough cards for today',
     limitText: 'You can send 5 cards a day — new ones tomorrow 🌸',
-    roomStart: (c, l) => `${c} invites you to a chat challenge: level ${l}. Everyone gets the same board — who scores the most? The first try is free.`,
+    roomStart: (c, l) => `${c} invites you to a 1-hour tournament: level ${l}. Everyone gets the same board — who scores the most? The first try is free.`,
     teamStart: (c) => `${c} is lighting the team lantern: every game you play adds lights. Reach the goal — a chest for everyone who helped.`,
     duelStart: (c, l) => `${c} challenges you to a duel: level ${l}, one try. Whoever clears it in fewer moves wins.`,
     roomGone: 'This room is already closed. But you can always play 🌸',
@@ -262,8 +277,9 @@ const en: Texts = {
     level: (n) => `level ${n}`,
     challengeBody: (c) => `${c} asks: who scores the most? The first try is free.`,
     nobody: 'Nobody has played yet — be the first!',
-    challengeEnded: 'The challenge is over 🏁',
+    challengeEnded: 'The tournament is over 🏁',
     played: (n, h) => `Played: ${n} · ${h} h left`,
+    playedMinutes: (n, m) => `Played: ${n} · ${m} min left`,
     boosted: '⚡ — with boosters',
     teamBody: (c) => `${c} invites the whole chat: shall we light the lantern together? Every game adds lights.`,
     teamProgress: (n, t) => `${fmt(n, 'en-US')} / ${fmt(t, 'en-US')} lights`,
@@ -286,6 +302,12 @@ const en: Texts = {
       own: 'You can’t send one to yourself 🙂', expired: 'This request has expired', not_found: 'Card not found',
     },
     refreshed: 'Ranking updated',
+  },
+  landing: {
+    title: '1-hour tournament in Sakura Spark',
+    description: (c, l) => `${c} invites you to a tournament: level ${l}. Who scores the most in an hour? The first try is free.`,
+    game: 'An anime match-3 in Telegram: lanterns, sakura and hundreds of levels',
+    open: 'Open in Telegram',
   },
 };
 
@@ -318,7 +340,7 @@ const es: Texts = {
     overtook: (n, level) => `¡${n} te superó en el nivel ${level}! ¿La revancha?`,
     livesBack: '¡Tus vidas están llenas — Mika te espera en el mapa! ❤ ×5',
     raceFirst: (n) => `¡${n} llevó el farolillo el primero! Aún quedan el 2.º y el 3.er puesto`,
-    challengeEnded: (place, players, c) => `El desafío del chat terminó: quedaste n.º ${place} de ${players}. Recompensa: ${c ? `${c} 💎 y ` : ''}un potenciador Mezclar`,
+    challengeEnded: (place, players, c) => `El torneo terminó: quedaste n.º ${place} de ${players}. Recompensa: ${c ? `${c} 💎 y ` : ''}un potenciador Mezclar`,
     teamLit: '¡El farolillo de equipo está encendido! Cofre: 3 💎, un martillo y un cristal arcoíris',
     duelWon: '¡Ganaste el duelo! Recompensa: un cristal arcoíris',
   },
@@ -333,8 +355,8 @@ const es: Texts = {
     pass: 'Vía premium del pase: potenciadores, cristales y marcos. Suscripción de 30 días que se renueva sola',
   },
   card: {
-    challengeTitle: 'Desafío del chat',
-    challengeDescription: (l) => `Nivel ${l} · quién hace más puntos en 24 horas`,
+    challengeTitle: 'Torneo de 1 hora',
+    challengeDescription: (l) => `Nivel ${l} · quién hace más puntos en una hora`,
     teamTitle: 'Farolillo de equipo',
     teamDescription: (t) => `Todo el chat enciende ${t} lucecitas juntos en 48 horas`,
     duelTitle: 'Duelo',
@@ -347,7 +369,7 @@ const es: Texts = {
     playGame: '🌸 Jugar a Sakura Spark',
     limitTitle: 'Suficientes tarjetas por hoy',
     limitText: 'Puedes enviar 5 tarjetas al día — mañana habrá más 🌸',
-    roomStart: (c, l) => `${c} te invita a un desafío del chat: nivel ${l}. Todos tienen el mismo tablero — ¿quién hace más puntos? El primer intento es gratis.`,
+    roomStart: (c, l) => `${c} te invita a un torneo de 1 hora: nivel ${l}. Todos tienen el mismo tablero — ¿quién hace más puntos? El primer intento es gratis.`,
     teamStart: (c) => `${c} enciende el farolillo de equipo: cada partida tuya suma lucecitas. Meta cumplida — un cofre para todos los que ayudaron.`,
     duelStart: (c, l) => `${c} te reta a un duelo: nivel ${l}, un intento. Gana quien lo supere con menos movimientos.`,
     roomGone: 'Esta sala ya está cerrada. Pero siempre puedes jugar 🌸',
@@ -355,8 +377,9 @@ const es: Texts = {
     level: (n) => `nivel ${n}`,
     challengeBody: (c) => `${c} pregunta: ¿quién hace más puntos? El primer intento es gratis.`,
     nobody: 'Nadie ha jugado aún — ¡sé el primero!',
-    challengeEnded: 'El desafío terminó 🏁',
+    challengeEnded: 'El torneo terminó 🏁',
     played: (n, h) => `Han jugado: ${n} · quedan ${h} h`,
+    playedMinutes: (n, m) => `Han jugado: ${n} · quedan ${m} min`,
     boosted: '⚡ — con potenciadores',
     teamBody: (c) => `${c} invita a todo el chat: ¿encendemos el farolillo juntos? Cada partida suma lucecitas.`,
     teamProgress: (n, t) => `${fmt(n, 'es-ES')} / ${fmt(t, 'es-ES')} lucecitas`,
@@ -379,6 +402,12 @@ const es: Texts = {
       own: 'No puedes regalarte a ti mismo 🙂', expired: 'La petición ha caducado', not_found: 'Tarjeta no encontrada',
     },
     refreshed: 'Clasificación actualizada',
+  },
+  landing: {
+    title: 'Torneo de 1 hora en Sakura Spark',
+    description: (c, l) => `${c} te invita a un torneo: nivel ${l}. ¿Quién hace más puntos en una hora? El primer intento es gratis.`,
+    game: 'Un match-3 anime en Telegram: farolillos, sakura y cientos de niveles',
+    open: 'Abrir en Telegram',
   },
 };
 
@@ -411,7 +440,7 @@ const pt: Texts = {
     overtook: (n, level) => `${n} passou você no nível ${level}! Vai dar o troco?`,
     livesBack: 'Suas vidas estão cheias — a Mika te espera no mapa! ❤ ×5',
     raceFirst: (n) => `${n} levou a lanterna primeiro! Ainda dá para ficar em 2.º e 3.º`,
-    challengeEnded: (place, players, c) => `O desafio do chat terminou: você ficou em ${place}.º de ${players}. Recompensa: ${c ? `${c} 💎 e ` : ''}um reforço Embaralhar`,
+    challengeEnded: (place, players, c) => `O torneio terminou: você ficou em ${place}.º de ${players}. Recompensa: ${c ? `${c} 💎 e ` : ''}um reforço Embaralhar`,
     teamLit: 'A lanterna da equipe está acesa! Baú: 3 💎, um martelo e um cristal arco-íris',
     duelWon: 'Você venceu o duelo! Recompensa: um cristal arco-íris',
   },
@@ -426,8 +455,8 @@ const pt: Texts = {
     pass: 'Trilha premium do passe: reforços, cristais e molduras. Assinatura de 30 dias que se renova sozinha',
   },
   card: {
-    challengeTitle: 'Desafio do chat',
-    challengeDescription: (l) => `Nível ${l} · quem faz mais pontos em 24 horas`,
+    challengeTitle: 'Torneio de 1 hora',
+    challengeDescription: (l) => `Nível ${l} · quem faz mais pontos em uma hora`,
     teamTitle: 'Lanterna da equipe',
     teamDescription: (t) => `O chat inteiro acende ${t} luzinhas juntos em 48 horas`,
     duelTitle: 'Duelo',
@@ -440,7 +469,7 @@ const pt: Texts = {
     playGame: '🌸 Jogar Sakura Spark',
     limitTitle: 'Chega de cartões por hoje',
     limitText: 'Dá para mandar 5 cartões por dia — amanhã tem mais 🌸',
-    roomStart: (c, l) => `${c} te chama para um desafio do chat: nível ${l}. Todos têm o mesmo tabuleiro — quem faz mais pontos? A primeira tentativa é grátis.`,
+    roomStart: (c, l) => `${c} te chama para um torneio de 1 hora: nível ${l}. Todos têm o mesmo tabuleiro — quem faz mais pontos? A primeira tentativa é grátis.`,
     teamStart: (c) => `${c} está acendendo a lanterna da equipe: cada partida sua soma luzinhas. Meta batida — um baú para todos que ajudaram.`,
     duelStart: (c, l) => `${c} te desafia para um duelo: nível ${l}, uma tentativa. Vence quem passar com menos jogadas.`,
     roomGone: 'Esta sala já está fechada. Mas você sempre pode jogar 🌸',
@@ -448,8 +477,9 @@ const pt: Texts = {
     level: (n) => `nível ${n}`,
     challengeBody: (c) => `${c} pergunta: quem faz mais pontos? A primeira tentativa é grátis.`,
     nobody: 'Ninguém jogou ainda — seja o primeiro!',
-    challengeEnded: 'O desafio terminou 🏁',
+    challengeEnded: 'O torneio terminou 🏁',
     played: (n, h) => `Jogaram: ${n} · faltam ${h} h`,
+    playedMinutes: (n, m) => `Jogaram: ${n} · faltam ${m} min`,
     boosted: '⚡ — com reforços',
     teamBody: (c) => `${c} chama o chat inteiro: vamos acender a lanterna juntos? Cada partida soma luzinhas.`,
     teamProgress: (n, t) => `${fmt(n, 'pt-BR')} / ${fmt(t, 'pt-BR')} luzinhas`,
@@ -472,6 +502,12 @@ const pt: Texts = {
       own: 'Não dá para dar a si mesmo 🙂', expired: 'O pedido expirou', not_found: 'Cartão não encontrado',
     },
     refreshed: 'Ranking atualizado',
+  },
+  landing: {
+    title: 'Torneio de 1 hora no Sakura Spark',
+    description: (c, l) => `${c} te chama para um torneio: nível ${l}. Quem faz mais pontos em uma hora? A primeira tentativa é grátis.`,
+    game: 'Um match-3 anime no Telegram: lanternas, sakura e centenas de níveis',
+    open: 'Abrir no Telegram',
   },
 };
 

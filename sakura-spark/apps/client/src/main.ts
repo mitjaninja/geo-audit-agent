@@ -11,7 +11,7 @@ import { SeasonScene } from './scenes/SeasonScene.ts';
 import type { SeasonData, SeasonTab } from './scenes/SeasonScene.ts';
 import { cardTitle, rewardText } from './meta.ts';
 import type { ChoiceData } from './scenes/ChoiceScene.ts';
-import type { Api, Attempt, Auth, ClientEvent, FriendsView, GateView, Item, LivesView, MetaView, ProductId, ShopView, WalletView } from './api.ts';
+import type { Api, Attempt, Auth, CreatedRoom, ClientEvent, FriendsView, GateView, Item, LivesView, MetaView, ProductId, ShopView, WalletView } from './api.ts';
 import { FriendsScene } from './scenes/FriendsScene.ts';
 import type { FriendAction, FriendsData } from './scenes/FriendsScene.ts';
 import { GateScene } from './scenes/GateScene.ts';
@@ -38,6 +38,7 @@ import type { MessageData } from './scenes/MessageScene.ts';
 import { telegram } from './telegram.ts';
 import { themeFrom } from './theme.ts';
 import { seenIntros } from './tutorial.ts';
+import { absoluteUrl, copyText, storyFile, webShare } from './share.ts';
 
 /**
  * Онлайн (в Telegram или с ?devUser=<id> против сервера с DEV_AUTH): уровень и сид выдаёт сервер,
@@ -131,7 +132,7 @@ function showMap(focus?: number): void {
   show('map', {
     theme, dpr, levelCount: progress.levelCount, maxLevel: progress.maxLevel, stars: progress.stars,
     lives: progress.lives, onPlay: (id: number) => showStart(id), ...(focus !== undefined ? { focus } : {}),
-    onShare: api ? () => chooseChatMode(() => showMap(focus)) : null,
+    onShare: api ? () => shareTournament(() => showMap(focus)) : null,
     crystals: progress.wallet?.crystals ?? null,
     onShop: api && shopView ? () => openShop(() => showMap(focus)) : null,
     onDaily: api && metaView ? () => openDaily(() => showMap(focus)) : null,
@@ -411,17 +412,56 @@ function openShopOverlay(): Promise<WalletView | null> {
  * выбор чата (shareMessage, Bot API 8.0). Без него — ссылка через t.me/share; вне Telegram — подсказка.
  */
 /** PRD: игрок выбирает режим для чата — челлендж, командный фонарь или дуэль. */
-function chooseChatMode(back: () => void): void {
-  const pick = (mode: RoomMode) => () => {
-    back();
-    void shareToChat(mode, back);
-  };
+/**
+ * Турнир на 1 час (единственный турнирный режим): сервер создаёт комнату, игрок выбирает, куда позвать —
+ * чат Telegram (карточка с рейтингом), любые приложения через «Поделиться», сторис Telegram или других
+ * соцсетей. Вне чата Telegram зовёт диплинк /t/<комната>: превью для соцсетей и переход прямо в турнир.
+ */
+async function shareTournament(back: () => void): Promise<void> {
+  if (!api) return;
+  let room: CreatedRoom;
+  try {
+    room = await api.createRoom('challenge');
+  } catch (e) {
+    if (e instanceof ApiError && e.code === 'room_limit') message(t.share.title, t.share.limit, { button: { label: t.toMap, onClick: back } });
+    return;
+  }
+  const url = room.shareUrl ?? room.link ?? absoluteUrl(`./?room=${room.roomId}`);
+  const text = t.tournament.text(room.levelId);
+  const storyUrl = absoluteUrl('art/story.jpg');
+  // файл для сторис грузим заранее: системное меню должно открыться прямо в жесте игрока
+  let story: File | null = null;
+  void storyFile(storyUrl).then((f) => { story = f; });
+  const done = (note: string) => message(t.tournament.title, note, { button: { label: t.toMap, onClick: back } });
+  const copyThen = (note: string) => void copyText(url).then(() => done(note));
+  const tt = t.tournament;
   show('choice', {
-    theme, dpr, title: t.share.title, onBack: back,
+    theme, dpr, title: tt.title, onBack: back,
     options: [
-      { ...t.chatModes.challenge, onClick: pick('challenge') },
-      { ...t.chatModes.team, onClick: pick('team') },
-      { ...t.chatModes.duel, onClick: pick('duel') },
+      ...(telegram.inTelegram ? [{
+        ...tt.telegram, onClick: () => void (async () => {
+          if (room.preparedMessageId && telegram.canShareMessage) await telegram.shareMessage(room.preparedMessageId);
+          else if (room.link) telegram.openLink(`https://t.me/share/url?url=${encodeURIComponent(room.link)}&text=${encodeURIComponent(text)}`);
+        })(),
+      }] : []),
+      {
+        ...tt.apps, onClick: () => void webShare({ title: tt.title, text, url }).then((ok) => { if (!ok) copyThen(tt.noShare); }),
+      },
+      ...(telegram.canShareToStory ? [{
+        ...tt.tgStory, onClick: () => telegram.shareToStory(storyUrl, `${text} ${url}`.slice(0, 200), { url, name: tt.linkName }),
+      }] : []),
+      {
+        ...tt.story, onClick: () => {
+          // ссылку — в буфер для стикера «Ссылка»; картинку — в системное меню (Instagram, VK…) или открыть, чтобы сохранить
+          void copyText(url);
+          void webShare({ title: tt.title, text, url, ...(story ? { files: [story] } : {}) }).then((ok) => {
+            if (ok) return;
+            if (!telegram.openExternal(storyUrl)) window.open(storyUrl, '_blank');
+            done(tt.storyHint);
+          });
+        },
+      },
+      { ...tt.copy, onClick: () => copyThen(tt.copied) },
     ],
   });
 }

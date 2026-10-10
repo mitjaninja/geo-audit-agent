@@ -38,6 +38,8 @@ export interface Economy {
   /** Чат-режимы: цель фонаря и его срок, срок дуэли, кристаллы топ-3 челленджа, кристаллы за подаренные жизни в день. */
   readonly chat: {
     readonly teamTarget: number; readonly teamHours: number; readonly duelMinutes: number;
+    /** Турнир чата — один общий уровень и сид; длительность в минутах. */
+    readonly challengeMinutes: number;
     readonly challengePrizes: readonly number[]; readonly helpCrystalsPerDay: number;
   };
   /** Фестивальный пропуск: подписка Stars на 30 дней. */
@@ -69,7 +71,7 @@ export const DEFAULT_ECONOMY: Economy = {
   piggy: { perWin: 3, max: 120, stars: 150, minToBreak: 30 },
   meta: { dayOffsetHours: 3, wheelSpinPrice: 9, wheelExtraSpins: 3, stuckDays: 3 },
   social: { giftsPerDay: 5, keysNeeded: 3, gateWaitHours: 24, gatePrice: 29, referralCrystals: 20, referralLevel: 10, pushesPerDay: 2 },
-  chat: { teamTarget: 2500, teamHours: 48, duelMinutes: 60, challengePrizes: [5, 3, 2], helpCrystalsPerDay: 3 },
+  chat: { teamTarget: 2500, teamHours: 48, duelMinutes: 60, challengeMinutes: 60, challengePrizes: [5, 3, 2], helpCrystalsPerDay: 3 },
   pass: { stars: 200 },
   events: { winStreak: 1, raceTarget: 10, raceSize: 5, raceHours: 72, raceGatherMinutes: 60, racePrizes: [10, 5, 2] },
 };

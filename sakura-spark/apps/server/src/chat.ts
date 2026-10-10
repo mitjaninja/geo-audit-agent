@@ -98,7 +98,10 @@ export class ChatBot {
     const lines = view.top.length > 0
       ? view.top.map((r, i) => `${MEDALS[i]} ${esc(r.name || c.player)} — ${num(r.score)}${r.boosted ? ' ⚡' : ''}`).join('\n')
       : c.nobody;
-    const footer = view.expired ? c.challengeEnded : c.played(view.players, hoursLeft);
+    // турнир идёт час — остаток в минутах; старые суточные комнаты — в часах
+    const msLeft = room.expiresAt - this.now();
+    const footer = view.expired ? c.challengeEnded
+      : msLeft < 2 * 3600_000 ? c.playedMinutes(view.players, Math.max(1, Math.ceil(msLeft / 60_000))) : c.played(view.players, hoursLeft);
     const legend = view.top.some((r) => r.boosted) ? `\n${c.boosted}` : '';
     return `🌸 <b>${c.challengeTitle}</b> · ${c.level(room.levelId)}\n${c.challengeBody(creator)}\n\n${lines}${legend}\n\n${footer}`;
   }
@@ -327,13 +330,13 @@ export class ChatBot {
     });
   }
 
-  /** Inline-режим: карточки челленджа и просьбы о жизни. Комнаты создаются под каждый запрос. */
+  /** Inline-режим: карточки турнира и просьбы о жизни. Комнаты создаются под каждый запрос. */
   private async onInlineQuery(q: NonNullable<Update['inline_query']>): Promise<void> {
     const user = await this.deps.service.login(toUser(q.from));
     let results: Record<string, unknown>[];
     try {
       results = [];
-      for (const mode of ['challenge', 'team', 'duel', 'help'] as const) results.push(await this.article(await this.deps.service.createRoom(user.id, mode)));
+      for (const mode of ['challenge', 'help'] as const) results.push(await this.article(await this.deps.service.createRoom(user.id, mode)));
     } catch (e) {
       if (!(e instanceof ServiceError && e.code === 'room_limit')) throw e;
       results = [{

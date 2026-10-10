@@ -53,7 +53,8 @@ test('bot replies, pushes, invoices and chat cards speak the player’s language
   const room = await service.createRoom(8, 'challenge');
   await chat.prepare(room, 8);
   const card = sent.find((c) => c.method === 'savePreparedInlineMessage').params.result;
-  assert.equal(card.title, 'Chat challenge');
+  assert.equal(card.title, '1-hour tournament');
+  assert.match(card.input_message_content.message_text, /60 min left/);
   assert.match(card.input_message_content.message_text, /Nobody has played yet/);
   store.close();
 });

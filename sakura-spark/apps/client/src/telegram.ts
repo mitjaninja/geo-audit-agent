@@ -5,8 +5,10 @@ interface WebApp {
   initData: string;
   initDataUnsafe?: { start_param?: string; user?: { language_code?: string } };
   shareMessage?(id: string, cb?: (sent: boolean) => void): void;
+  shareToStory?(mediaUrl: string, params?: { text?: string; widget_link?: { url: string; name?: string } }): void;
   openInvoice?(url: string, cb?: (status: 'paid' | 'cancelled' | 'failed' | 'pending') => void): void;
   openTelegramLink?(url: string): void;
+  openLink?(url: string): void;
   version: string;
   platform: string;
   themeParams: TelegramThemeParams;
@@ -54,6 +56,16 @@ export const telegram = {
     return webApp()?.initDataUnsafe?.start_param ?? null;
   },
 
+  /** Сторис из Mini App (Bot API 7.8). Ссылка-виджет в сторис доступна только Premium — остальным хватит текста. */
+  get canShareToStory(): boolean {
+    const tg = webApp();
+    return !!tg?.shareToStory && (tg.isVersionAtLeast?.('7.8') ?? false);
+  },
+
+  shareToStory(mediaUrl: string, text: string, link: { url: string; name: string }): void {
+    webApp()?.shareToStory?.(mediaUrl, { text, widget_link: link });
+  },
+
   get canShareMessage(): boolean {
     const tg = webApp();
     return !!tg?.shareMessage && (tg.isVersionAtLeast?.('8.0') ?? false);
@@ -71,6 +83,14 @@ export const telegram = {
     const tg = webApp();
     if (!tg?.openInvoice) return Promise.resolve('unsupported');
     return new Promise((resolve) => tg.openInvoice!(url, (status) => resolve(status)));
+  },
+
+  /** Открыть обычную https-ссылку во внешнем браузере (картинка сторис — сохранить). */
+  openExternal(url: string): boolean {
+    const tg = webApp();
+    if (!tg?.openLink) return false;
+    tg.openLink(url);
+    return true;
   },
 
   /** Открыть t.me-ссылку внутри Telegram (запасной путь, если shareMessage недоступен). */
