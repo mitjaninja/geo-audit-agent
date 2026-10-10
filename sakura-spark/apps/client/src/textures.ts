@@ -207,6 +207,72 @@ export function makeTextures(scene: Phaser.Scene): void {
     g.fillStyle(0xffffff, 1);
     g.fillPoints(star(44, 20), true);
   });
+  // иконки бустеров и кристалла (временная графика)
+  const disc = (g: Phaser.GameObjects.Graphics, color: number) => {
+    g.fillStyle(color, 1);
+    g.fillCircle(C, C, 44);
+    g.fillStyle(0xffffff, 0.25);
+    g.fillEllipse(C - 12, C - 18, 40, 22);
+  };
+  draw(scene, 'b-hammer', (g) => {
+    disc(g, 0xffd6a5);
+    g.fillStyle(0x9c6a3c, 1);
+    g.fillPoints([P(30, 72), P(38, 80), P(66, 46), P(58, 38)], true);
+    g.fillStyle(0x6b6f80, 1);
+    g.fillPoints([P(46, 26), P(70, 50), P(80, 40), P(56, 16)], true);
+  });
+  draw(scene, 'b-freeSwap', (g) => {
+    disc(g, 0xc8f0dc);
+    g.fillStyle(0x2fa36b, 1);
+    g.fillPoints([P(18, 38), P(36, 22), P(36, 32), P(62, 32), P(62, 44), P(36, 44), P(36, 54)], true);
+    g.fillPoints([P(78, 58), P(60, 74), P(60, 64), P(34, 64), P(34, 52), P(60, 52), P(60, 42)], true);
+  });
+  draw(scene, 'b-shuffle', (g) => {
+    disc(g, 0xd9ccff);
+    g.lineStyle(9, 0x7b5cd6, 1);
+    g.beginPath();
+    g.arc(C, C, 24, Phaser.Math.DegToRad(200), Phaser.Math.DegToRad(340), false);
+    g.strokePath();
+    g.beginPath();
+    g.arc(C, C, 24, Phaser.Math.DegToRad(20), Phaser.Math.DegToRad(160), false);
+    g.strokePath();
+    g.fillStyle(0x7b5cd6, 1);
+    g.fillPoints([P(68, 30), P(80, 46), P(62, 46)], true);
+    g.fillPoints([P(28, 66), P(16, 50), P(34, 50)], true);
+  });
+  draw(scene, 'b-beamBomb', (g) => {
+    disc(g, 0xfff0b3);
+    g.fillStyle(0xffffff, 1);
+    for (const d of [-10, 0, 10]) g.fillRect(14, C + d - 2, 68, 4);
+    g.lineStyle(7, 0x3b2a4a, 0.9);
+    g.strokeCircle(C + 8, C + 6, 18);
+  });
+  draw(scene, 'b-rainbow', (g) => {
+    PIECE_COLORS.forEach((c, i) => {
+      g.fillStyle(c, 1);
+      g.slice(C, C, 44, Phaser.Math.DegToRad(i * 60), Phaser.Math.DegToRad(i * 60 + 60), false);
+      g.fillPath();
+    });
+    g.fillStyle(0xffffff, 1);
+    g.fillPoints(star(20, 9), true);
+  });
+  draw(scene, 'b-extraMoves', (g) => {
+    disc(g, 0xffc2d9);
+    g.fillStyle(0xffffff, 1);
+    g.fillRect(C - 26, C - 5, 30, 10);
+    g.fillRect(C - 16, C - 15, 10, 30);
+    for (const dy of [-16, 0, 16]) g.fillCircle(C + 20, C + dy, 6);
+  });
+  draw(scene, 'crystal', (g) => {
+    const pts = [P(C, 10), P(C + 34, C - 6), P(C, TEX - 10), P(C - 34, C - 6)];
+    g.fillStyle(0x7fd6ff, 1);
+    g.fillPoints(pts, true);
+    g.fillStyle(0xc9f0ff, 1);
+    g.fillPoints([P(C, 10), P(C + 34, C - 6), P(C, C - 6), P(C - 34, C - 6)], true);
+    g.lineStyle(3, 0xffffff, 0.9);
+    g.strokePoints(pts, true);
+  });
+
   // маркер касания для обучения и подсказок: «палец» тянет фишку
   draw(scene, 'hand', (g) => {
     g.fillStyle(0x3b2a4a, 0.18);

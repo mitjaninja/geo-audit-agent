@@ -9,7 +9,7 @@ import type { Theme } from '../theme.ts';
 
 const FONT = 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
 
-function goalIcon(g: GoalProgress): string {
+export function goalIcon(g: GoalProgress): string {
   switch (g.goal.type) {
     case 'collect': return pieceKey(g.goal.color, 'none');
     case 'jelly': return 'jelly2';

@@ -20,6 +20,9 @@ export interface MapData {
   readonly onPlay: (levelId: number) => void;
   /** «Позвать в чат» — создать челлендж и отправить карточку; null — офлайн. */
   readonly onShare: (() => void) | null;
+  /** Кристаллы и вход в магазин; null — офлайн. */
+  readonly crystals: number | null;
+  readonly onShop: (() => void) | null;
 }
 
 const FONT = 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
@@ -33,6 +36,7 @@ export class MapScene extends Phaser.Scene {
   private livesText!: Phaser.GameObjects.Text;
   /** Кнопка «В чат» в пикселях canvas — для e2e. */
   shareButton: { x: number; y: number } | null = null;
+  shopButton: { x: number; y: number } | null = null;
   /** Нажатие по кнопке поверх карты — чтобы тап не попал в узел уровня под ней. */
   private shareTapped = false;
 
@@ -43,6 +47,7 @@ export class MapScene extends Phaser.Scene {
   create(data: MapData): void {
     this.data_ = data;
     this.shareButton = null;
+    this.shopButton = null;
     this.shareTapped = false;
     const { theme, dpr: k, levelCount, maxLevel, stars } = data;
     const W = this.scale.width;
@@ -130,9 +135,17 @@ export class MapScene extends Phaser.Scene {
       fontFamily: FONT, fontSize: `${Math.round(16 * k)}px`, fontStyle: 'bold', color: theme.text,
     }).setOrigin(0, 0.5).setScrollFactor(0).setDepth(11);
     const totalStars = Object.values(stars).reduce((sum, v) => sum + v.stars, 0);
-    this.add.text(W - 28 * k, barY + 24 * k, `★ ${totalStars}`, {
+    const right = this.add.text(W - 28 * k, barY + 24 * k, `${data.crystals !== null ? `💎 ${data.crystals}   ` : ''}★ ${totalStars}`, {
       fontFamily: FONT, fontSize: `${Math.round(16 * k)}px`, fontStyle: 'bold', color: theme.text,
     }).setOrigin(1, 0.5).setScrollFactor(0).setDepth(11);
+    if (data.onShop) {
+      const open = data.onShop;
+      right.setInteractive({ useHandCursor: true }).on('pointerup', () => {
+        this.shareTapped = true;
+        open();
+      });
+      this.shopButton = { x: right.x - right.width / 2, y: right.y };
+    }
 
     if (data.onShare) {
       const bw = 112 * k;

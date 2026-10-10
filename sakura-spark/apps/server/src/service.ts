@@ -97,6 +97,12 @@ export interface StartResponse {
   readonly lives: LivesView;
   readonly roomId?: string;
   readonly wallet: WalletView;
+  /**
+   * Всё, что влияет на партию, кроме ходов: клиент обязан собрать ту же партию, что сервер проиграет
+   * в реплее. assist — скрытое облегчение: в интерфейсе не показывается, но без него раскладки разойдутся.
+   */
+  readonly assist: number;
+  readonly startBoosters: readonly Item[];
 }
 
 export interface FinishResponse {
@@ -242,7 +248,10 @@ export class GameService {
     };
     await this.store.createAttempt(attempt, lives);
     await this.track(userId, 'level_start', levelId, { attemptId: attempt.id, assist: attempt.assist, boosters: startBoosters });
-    return { attemptId: attempt.id, seed: attempt.seed, level, lives: view(lives, now), wallet: await this.wallet(userId) };
+    return {
+      attemptId: attempt.id, seed: attempt.seed, level, lives: view(lives, now), wallet: await this.wallet(userId),
+      assist: attempt.assist, startBoosters,
+    };
   }
 
   /**
@@ -382,7 +391,7 @@ export class GameService {
     await this.track(userId, 'room_start', room.levelId, { roomId, attemptId: attempt.id, free });
     return {
       attemptId: attempt.id, seed: room.seed, level: this.levels.get(room.levelId)!, lives: view(lives, now), roomId,
-      wallet: await this.wallet(userId),
+      wallet: await this.wallet(userId), assist: 0, startBoosters,
     };
   }
 

@@ -1,4 +1,4 @@
-import type { LevelDef, Swap } from '@sakura/core';
+import type { LevelDef, Move } from '@sakura/core';
 
 /** Ответы сервера (apps/server/src/service.ts). Дублируем типы, чтобы клиент не тянул серверный код. */
 export interface LivesView {
@@ -8,9 +8,31 @@ export interface LivesView {
   readonly infiniteUntil: number | null;
 }
 
+export type Item = 'beamBomb' | 'rainbow' | 'extraMoves' | 'hammer' | 'freeSwap' | 'shuffle';
+export type ProductId = 'pack10' | 'pack50' | 'pack100' | 'pack250' | 'pack500' | 'starter' | 'piggy';
+
+export interface WalletView {
+  readonly crystals: number;
+  readonly items: Readonly<Record<Item, number>>;
+  readonly piggy: number;
+  /** Стартовый пак доступен до этого момента (часы сервера); null — нет. */
+  readonly starterUntil: number | null;
+}
+
+export interface ShopView {
+  readonly itemPrices: Readonly<Record<Item, number>>;
+  readonly refillLives: number;
+  readonly extendPrices: readonly number[];
+  readonly extendMoves: number;
+  readonly packs: Readonly<Record<'pack10' | 'pack50' | 'pack100' | 'pack250' | 'pack500', { crystals: number; stars: number; bonus: number; title: string }>>;
+  readonly starter: { readonly stars: number; readonly crystals: number; readonly items: Partial<Record<Item, number>>; readonly infiniteLivesMs: number };
+  readonly piggy: { readonly stars: number; readonly max: number; readonly minToBreak: number };
+}
+
 export interface Me {
   readonly user: { readonly id: number; readonly firstName: string };
   readonly lives: LivesView;
+  readonly wallet: WalletView;
   readonly maxLevel: number;
   readonly levels: Record<string, { readonly stars: number; readonly bestScore: number }>;
   readonly levelCount: number;
@@ -22,6 +44,10 @@ export interface Attempt {
   readonly seed: number;
   readonly level: LevelDef;
   readonly lives: LivesView;
+  readonly wallet: WalletView;
+  /** Параметры партии от сервера: без них реплей на сервере не сойдётся. */
+  readonly assist: number;
+  readonly startBoosters: readonly Item[];
 }
 
 export interface FinishResult {
@@ -31,6 +57,7 @@ export interface FinishResult {
   readonly bestScore: number;
   readonly lives: LivesView;
   readonly maxLevel: number;
+  readonly wallet: WalletView;
   /** Попытка в комнате чата: место в рейтинге. */
   readonly room?: { readonly id: string; readonly place: number; readonly players: number };
 }
@@ -69,7 +96,7 @@ export class ApiError extends Error {
 }
 
 export interface ClientEvent {
-  readonly name: 'session_start' | 'session_end' | 'hint_shown' | 'tutorial_complete';
+  readonly name: 'session_start' | 'session_end' | 'hint_shown' | 'tutorial_complete' | 'moves_offer_shown' | 'shop_opened';
   readonly levelId?: number;
   readonly props?: Record<string, unknown>;
 }
@@ -78,11 +105,18 @@ export interface Api {
   me(): Promise<Me>;
   /** Аналитика; keepalive — запрос доходит, даже если Mini App сворачивают. Ошибки глотаются. */
   events(events: readonly ClientEvent[]): Promise<void>;
-  start(levelId: number): Promise<Attempt>;
-  finish(attemptId: string, swaps: readonly Swap[], timedOut: boolean): Promise<FinishResult>;
+  start(levelId: number, boosters?: readonly Item[]): Promise<Attempt>;
+  finish(attemptId: string, moves: readonly Move[], timedOut: boolean): Promise<FinishResult>;
   createRoom(mode: 'challenge' | 'help'): Promise<CreatedRoom>;
   room(id: string): Promise<RoomView>;
-  startRoom(id: string): Promise<Attempt>;
+  startRoom(id: string, boosters?: readonly Item[]): Promise<Attempt>;
+  /** «+5 ходов»: сервер проигрывает ходы, проверяет, что они кончились, и списывает кристаллы. */
+  extend(attemptId: string, moves: readonly Move[]): Promise<{ price: number; extensions: number; wallet: WalletView }>;
+  shop(): Promise<ShopView>;
+  buy(item: Item, count?: number): Promise<{ wallet: WalletView }>;
+  refillLives(): Promise<{ lives: LivesView; wallet: WalletView }>;
+  /** Счёт в Telegram Stars: ссылка для Telegram.WebApp.openInvoice. */
+  purchase(product: ProductId): Promise<{ invoiceId: string; stars: number; link: string }>;
 }
 
 export function createApi(auth: Auth, base = '', fetchImpl: typeof fetch = (...a) => fetch(...a)): Api {
@@ -101,10 +135,15 @@ export function createApi(auth: Auth, base = '', fetchImpl: typeof fetch = (...a
   return {
     me: () => call<Me>('GET', '/api/me'),
     events: (events) => call<unknown>('POST', '/api/events', { events }, true).then(() => undefined, () => undefined),
-    start: (levelId) => call<Attempt>('POST', '/api/attempts', { levelId }),
-    finish: (attemptId, swaps, timedOut) => call<FinishResult>('POST', `/api/attempts/${attemptId}/finish`, { swaps, timedOut }),
+    start: (levelId, boosters = []) => call<Attempt>('POST', '/api/attempts', { levelId, boosters }),
+    finish: (attemptId, moves, timedOut) => call<FinishResult>('POST', `/api/attempts/${attemptId}/finish`, { swaps: moves, timedOut }),
     createRoom: (mode) => call<CreatedRoom>('POST', '/api/rooms', { mode }),
     room: (id) => call<RoomView>('GET', `/api/rooms/${encodeURIComponent(id)}`),
-    startRoom: (id) => call<Attempt>('POST', `/api/rooms/${encodeURIComponent(id)}/attempts`),
+    startRoom: (id, boosters = []) => call<Attempt>('POST', `/api/rooms/${encodeURIComponent(id)}/attempts`, { boosters }),
+    extend: (attemptId, moves) => call('POST', `/api/attempts/${attemptId}/extend`, { moves }),
+    shop: () => call<ShopView>('GET', '/api/shop'),
+    buy: (item, count = 1) => call('POST', '/api/shop/buy', { item, count }),
+    refillLives: () => call('POST', '/api/lives/refill'),
+    purchase: (product) => call('POST', '/api/purchases', { product }),
   };
 }

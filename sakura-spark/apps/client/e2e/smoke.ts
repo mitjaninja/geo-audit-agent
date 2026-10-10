@@ -55,10 +55,23 @@ async function clickCanvas(page: Page, p: { x: number; y: number }): Promise<voi
   await page.mouse.click(p.x / 2, p.y / 2);
 }
 
-async function tapLevelOnMap(page: Page, id: number, waitReady = true): Promise<void> {
+const startReady = (page: Page) => page.waitForFunction(() => (globalThis as any).__sakuraStart?.scene.isActive() && (globalThis as any).__sakuraStart.buttons.length > 0);
+
+/** Экран старта уровня: выбрать бустеры (по названию предмета) и нажать «Играть». */
+async function startLevel(page: Page, boosters: string[] = []): Promise<void> {
+  await startReady(page);
+  for (const item of boosters) {
+    await clickCanvas(page, (await g(page, `globalThis.__sakuraStart.toggles.find((x) => x.item === ${JSON.stringify(item)})`)) as { x: number; y: number });
+    await page.waitForTimeout(150);
+  }
+  await clickCanvas(page, (await g(page, `globalThis.__sakuraStart.buttons.find((b) => b.label === 'Играть')`)) as { x: number; y: number });
+}
+
+async function tapLevelOnMap(page: Page, id: number, waitReady = true, boosters: string[] = []): Promise<void> {
   await mapReady(page);
   await g(page, `m.scrollTo(${id})`);
   await clickCanvas(page, (await g(page, `m.nodeOnScreen(${id})`)) as { x: number; y: number });
+  await startLevel(page, boosters);
   if (waitReady) await gameReady(page);
   else await gameShown(page);
 }
@@ -174,6 +187,7 @@ try {
     const play = (await g(page, 'globalThis.__sakuraRoom.buttons[0]')) as { label: string; x: number; y: number };
     assert.equal(play.label, 'Играть — бесплатно');
     await clickCanvas(page, play);
+    await startLevel(page);
     await gameReady(page);
     assert.equal(await g(page, 's.onboarding'), false, 'no intro in a chat room');
     assert.equal(await g(page, 's.match.options.seed'), room.seed, 'same seed as everyone in the chat');
@@ -243,16 +257,88 @@ try {
     await mapReady(page);
     await g(page, 'm.scrollTo(1)');
     await clickCanvas(page, (await g(page, 'm.nodeOnScreen(1)')) as { x: number; y: number });
+    await startLevel(page);
     await page.waitForFunction(() => (globalThis as any).__sakuraMessage?.buttonCenter && (globalThis as any).__sakuraMessage.scene.isActive());
     assert.ok(await g(page, 'msg.secondaryCenter'), '«ask for a life in chat» is offered');
     await page.waitForTimeout(400);
     await page.screenshot({ path: `${OUT}/6-no-lives.png` });
-    await store.saveLives(2, { lives: 5, updatedAt: Date.now(), infiniteUntil: 0 });
-    const btn = (await g(page, 'msg.buttonCenter')) as { x: number; y: number };
-    await clickCanvas(page, btn);
+    // «Все жизни · 12 💎»: кристаллы есть — жизни полные, снова экран старта уровня
+    await store.transact(2, (w) => ({ crystals: w.crystals + 12 }));
+    await clickCanvas(page, (await g(page, 'msg.buttonCenter')) as { x: number; y: number });
+    await mapReady(page);
+    assert.equal((await service.me((await store.getUser(2))!)).lives.lives, 5);
+    assert.equal((await store.getWallet(2)).crystals, 0);
     await tapLevelOnMap(page, 1);
     assert.equal((await service.me((await store.getUser(2))!)).lives.lives, 4);
     assert.deepEqual(errors.filter((e) => !/status of 409/.test(e)), [], '409 no_lives is expected');
+    await page.context().close();
+  }
+
+  console.log('economy: start booster, Pon\'s hammer, +5 moves for crystals, give up; shop outside Telegram');
+  {
+    await service.login({ id: 20, firstName: 'Рэн' });
+    // сразу открыть сложный уровень 25 и дать кристаллов — проигрыш по ходам почти гарантирован
+    (store as any).db.prepare('UPDATE users SET max_level = 25 WHERE id = 20').run();
+    await store.transact(20, (w) => ({ crystals: w.crystals + 100 }));
+    const { page, errors } = await open('?devUser=20');
+    await mapReady(page);
+    await page.screenshot({ path: `${OUT}/11-map-wallet.png` });
+    await g(page, 'm.scrollTo(25)');
+    await clickCanvas(page, (await g(page, 'm.nodeOnScreen(25)')) as { x: number; y: number });
+    await startReady(page);
+    await page.waitForTimeout(300);
+    await page.screenshot({ path: `${OUT}/12-start.png` });
+    await startLevel(page, ['beamBomb']);
+    await gameReady(page);
+    const specials = (await g(page, 's.match.board.grid.flat().filter((p) => p && p.special !== "none" && p.special !== "lantern").length')) as number;
+    assert.ok(specials >= 2, 'beam and bomb are on the board');
+    // молот из панели: нажать кнопку, потом фишку
+    const hammer = (await g(page, 's.bar.find((b) => b.item === "hammer")')) as { x: number; y: number };
+    await clickCanvas(page, hammer);
+    assert.equal(await g(page, 's.armed'), 'hammer');
+    const cell = (await g(page, 's.match.board.playableCells().find((p) => { const x = s.match.board.get(p); return x && x.special === "none"; })')) as { row: number; col: number };
+    const c = await cssCenter(page, cell.row, cell.col);
+    await page.mouse.click(c.x, c.y);
+    await page.waitForFunction(() => (globalThis as any).__sakura.match.history.some((m: any) => m.booster === 'hammer'));
+    await gameReady(page);
+    // доигрываем первым ходом до проигрыша по ходам → окно «+5 ходов»
+    await page.evaluate(async () => {
+      const s = (globalThis as any).__sakura;
+      while (s.match.status === 'playing') await s.trySwap(s.match.validSwaps()[0]);
+    });
+    await page.waitForFunction(() => (globalThis as any).__sakura.dialogButtons.some((b: any) => b.label.startsWith('+5')));
+    await page.waitForTimeout(300);
+    await page.screenshot({ path: `${OUT}/13-extend.png` });
+    await clickDialog(page, '+5 ходов · 9 💎');
+    await page.waitForFunction(() => (globalThis as any).__sakura.match.movesLeft === 5);
+    assert.equal((await store.getWallet(20)).crystals, 91);
+    await page.evaluate(async () => {
+      const s = (globalThis as any).__sakura;
+      while (s.match.status === 'playing') await s.trySwap(s.match.validSwaps()[0]);
+    });
+    await page.waitForFunction(() => (globalThis as any).__sakura.dialogButtons.some((b: any) => b.label === 'Сдаться' || b.label === 'На карту'));
+    if (await g(page, 's.dialogButtons.some((b) => b.label === "Сдаться")')) {
+      assert.ok(await g(page, 's.dialogButtons.some((b) => b.label === "+5 ходов · 15 💎")'), 'the second extension costs 15');
+      await clickDialog(page, 'Сдаться');
+    }
+    await page.waitForFunction(() => (globalThis as any).__sakura.dialogButtons.some((b: any) => b.label === 'На карту'));
+    const w = await store.getWallet(20);
+    assert.equal(w.items.beamBomb, 2, 'start booster taken');
+    assert.equal(w.items.hammer, 2, 'hammer taken at finish after the server replay');
+    const events = (await store.getEvents(20)).map((e) => e.name);
+    for (const n of ['booster_used', 'moves_offer_shown', 'moves_purchased', 'level_fail']) assert.ok(events.includes(n), `event ${n}`);
+    await clickDialog(page, 'На карту');
+    await mapReady(page);
+    // магазин вне Telegram: витрина есть, оплата объясняет, где работает
+    await clickCanvas(page, (await g(page, 'm.shopButton')) as { x: number; y: number });
+    await page.waitForFunction(() => (globalThis as any).__sakuraShop?.scene.isActive());
+    await page.waitForTimeout(300);
+    await page.screenshot({ path: `${OUT}/14-shop.png` });
+    await clickCanvas(page, (await g(page, 'globalThis.__sakuraShop.buttons.find((b) => b.label === "225 ⭐")')) as { x: number; y: number });
+    await page.waitForFunction(() => (globalThis as any).__sakuraShop.status?.text?.includes('Telegram'));
+    await clickCanvas(page, (await g(page, 'globalThis.__sakuraShop.buttons.find((b) => b.label === "Закрыть")')) as { x: number; y: number });
+    await mapReady(page);
+    assert.deepEqual(errors, []);
     await page.context().close();
   }
 

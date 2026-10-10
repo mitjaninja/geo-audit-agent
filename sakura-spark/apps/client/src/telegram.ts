@@ -5,6 +5,7 @@ interface WebApp {
   initData: string;
   initDataUnsafe?: { start_param?: string };
   shareMessage?(id: string, cb?: (sent: boolean) => void): void;
+  openInvoice?(url: string, cb?: (status: 'paid' | 'cancelled' | 'failed' | 'pending') => void): void;
   openTelegramLink?(url: string): void;
   version: string;
   platform: string;
@@ -58,6 +59,13 @@ export const telegram = {
     const tg = webApp();
     if (!tg?.shareMessage) return Promise.resolve(false);
     return new Promise((resolve) => tg.shareMessage!(id, (sent) => resolve(sent)));
+  },
+
+  /** Окно оплаты Stars поверх игры. 'unsupported' — не в Telegram. */
+  openInvoice(url: string): Promise<'paid' | 'cancelled' | 'failed' | 'pending' | 'unsupported'> {
+    const tg = webApp();
+    if (!tg?.openInvoice) return Promise.resolve('unsupported');
+    return new Promise((resolve) => tg.openInvoice!(url, (status) => resolve(status)));
   },
 
   /** Открыть t.me-ссылку внутри Telegram (запасной путь, если shareMessage недоступен). */

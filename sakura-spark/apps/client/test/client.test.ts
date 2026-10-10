@@ -90,5 +90,19 @@ test('api client: auth header, JSON body, errors carry code and body', async () 
   assert.equal((calls[0]!.init.headers as Record<string, string>).authorization, 'tma a=1&hash=x');
   await assert.rejects(api.start(2), (e: unknown) => e instanceof ApiError && e.status === 409 && e.code === 'no_lives'
     && (e.body.lives as { lives: number }).lives === 0);
-  assert.equal(calls[1]!.init.body, JSON.stringify({ levelId: 2 }));
+  assert.equal(calls[1]!.init.body, JSON.stringify({ levelId: 2, boosters: [] }));
+});
+
+test('economy helpers: next +5 price, packs by price', async () => {
+  const { nextExtendPrice, packList, ITEM_INFO, START_ITEMS, GAME_ITEMS } = await import('../src/economy.ts');
+  const shop = { extendPrices: [9, 15, 25] };
+  assert.deepEqual([0, 1, 2, 3, 9].map((n) => nextExtendPrice(shop, n)), [9, 15, 25, 25, 25]);
+  const list = packList({ packs: {
+    pack500: { crystals: 500, stars: 1900, bonus: 40, title: 'c' }, pack10: { crystals: 10, stars: 50, bonus: 0, title: 'a' },
+    pack50: { crystals: 50, stars: 225, bonus: 10, title: 'b' }, pack100: { crystals: 100, stars: 425, bonus: 20, title: 'd' },
+    pack250: { crystals: 250, stars: 1000, bonus: 30, title: 'e' },
+  } } as never);
+  assert.deepEqual(list.map((p) => p.id), ['pack10', 'pack50', 'pack100', 'pack250', 'pack500']);
+  assert.ok(START_ITEMS.every((i) => ITEM_INFO[i].when === 'start'));
+  assert.ok(GAME_ITEMS.every((i) => ITEM_INFO[i].when === 'game'));
 });

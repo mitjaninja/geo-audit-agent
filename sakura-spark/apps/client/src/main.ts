@@ -2,7 +2,7 @@ import Phaser from 'phaser';
 import { parseLevel } from '@sakura/core';
 import type { LevelDef, Match3Game } from '@sakura/core';
 import { ApiError, createApi } from './api.ts';
-import type { Api, Auth, ClientEvent, LivesView } from './api.ts';
+import type { Api, Auth, ClientEvent, Item, LivesView, ProductId, ShopView, WalletView } from './api.ts';
 import { t } from './i18n.ts';
 import { BootScene } from './scenes/BootScene.ts';
 import { GameScene } from './scenes/GameScene.ts';
@@ -11,6 +11,10 @@ import { MapScene } from './scenes/MapScene.ts';
 import type { MapData } from './scenes/MapScene.ts';
 import { MessageScene } from './scenes/MessageScene.ts';
 import { RoomScene } from './scenes/RoomScene.ts';
+import { ShopScene } from './scenes/ShopScene.ts';
+import type { ShopData } from './scenes/ShopScene.ts';
+import { StartScene } from './scenes/StartScene.ts';
+import type { StartData } from './scenes/StartScene.ts';
 import type { RoomData } from './scenes/RoomScene.ts';
 import type { MessageData } from './scenes/MessageScene.ts';
 import { telegram } from './telegram.ts';
@@ -67,11 +71,13 @@ const progress = {
   levelCount: bundled.size,
   stars: {} as Record<string, { stars: number }>,
   lives: null as LivesView | null,
+  wallet: null as WalletView | null,
 };
+let shopView: ShopView | null = null;
 
-type SceneKey = 'game' | 'message' | 'map' | 'room';
-function show(scene: SceneKey, data: GameSceneData | MessageData | MapData | RoomData): void {
-  for (const key of ['game', 'message', 'map', 'room']) if (key !== scene && game.scene.isActive(key)) game.scene.stop(key);
+type SceneKey = 'game' | 'message' | 'map' | 'room' | 'start' | 'shop';
+function show(scene: SceneKey, data: GameSceneData | MessageData | MapData | RoomData | StartData | ShopData): void {
+  for (const key of ['game', 'message', 'map', 'room', 'start', 'shop']) if (key !== scene && game.scene.isActive(key)) game.scene.stop(key);
   if (game.scene.isActive(scene)) game.scene.getScene(scene)!.scene.restart(data);
   else game.scene.start(scene, data);
 }
@@ -87,8 +93,86 @@ function showMap(focus?: number): void {
   history.replaceState(null, '', `?${new URLSearchParams([...params].filter(([k]) => k !== 'level'))}`);
   show('map', {
     theme, dpr, levelCount: progress.levelCount, maxLevel: progress.maxLevel, stars: progress.stars,
-    lives: progress.lives, onPlay: (id) => void play(id), ...(focus !== undefined ? { focus } : {}),
+    lives: progress.lives, onPlay: (id: number) => showStart(id), ...(focus !== undefined ? { focus } : {}),
     onShare: api ? () => void shareToChat('challenge', () => showMap(focus)) : null,
+    crystals: progress.wallet?.crystals ?? null,
+    onShop: api && shopView ? () => openShop(() => showMap(focus)) : null,
+  });
+}
+
+/** Экран старта уровня с бустерами (онлайн); офлайн — сразу в игру. */
+function showStart(levelId: number, room?: { id: string }): void {
+  const level = bundled.get(levelId);
+  if (!api || !progress.wallet || !shopView || !level) {
+    if (room) return void playRoom(room.id);
+    return void play(levelId);
+  }
+  show('start', {
+    theme, dpr, level, wallet: progress.wallet, shop: shopView,
+    title: room ? t.room.title : t.level(levelId),
+    onPlay: (boosters: Item[]) => void (room ? playRoom(room.id, boosters) : play(levelId, boosters)),
+    onBack: () => (room ? void showRoom(room.id) : showMap(levelId)),
+    onBuy: buyItem,
+  });
+}
+
+async function buyItem(item: Item): Promise<WalletView | null> {
+  if (!api) return null;
+  try {
+    const r = await api.buy(item);
+    progress.wallet = r.wallet;
+    return r.wallet;
+  } catch {
+    return null;
+  }
+}
+
+/** Покупка за Stars: счёт → окно оплаты Telegram → ждём, пока сервер зачислит (вебхук может прийти чуть позже). */
+async function purchase(product: ProductId): Promise<{ wallet?: WalletView; error?: string }> {
+  if (!api) return {};
+  if (!telegram.inTelegram) return { error: t.economy.paymentsOnlyTelegram };
+  let link: string;
+  try {
+    link = (await api.purchase(product)).link;
+  } catch {
+    return { error: t.economy.paymentFailed };
+  }
+  const before = JSON.stringify(progress.wallet);
+  const status = await telegram.openInvoice(link);
+  if (status === 'unsupported') return { error: t.economy.paymentsOnlyTelegram };
+  if (status !== 'paid') return status === 'failed' ? { error: t.economy.paymentFailed } : {};
+  for (let i = 0; i < 10; i++) {
+    const me = await api.me().catch(() => null);
+    if (me && JSON.stringify(me.wallet) !== before) {
+      progress.wallet = me.wallet;
+      progress.lives = livesToClient(me.lives);
+      return { wallet: me.wallet };
+    }
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+  return { error: t.economy.paymentPending };
+}
+
+function shopData(onClose: () => void, overlay = false): ShopData {
+  void api?.events([{ name: 'shop_opened' }]);
+  return { theme, dpr, wallet: progress.wallet!, shop: shopView!, clockOffset, onPurchase: purchase, onClose, overlay };
+}
+
+function openShop(back: () => void): void {
+  if (!progress.wallet || !shopView) return;
+  show('shop', shopData(back));
+}
+
+/** Магазин поверх игры или сообщения: сцена под ним ждёт; результат — новый кошелёк, если что-то куплено. */
+function openShopOverlay(): Promise<WalletView | null> {
+  if (!progress.wallet || !shopView) return Promise.resolve(null);
+  const before = JSON.stringify(progress.wallet);
+  return new Promise((resolve) => {
+    game.scene.run('shop', shopData(() => {
+      game.scene.stop('shop');
+      resolve(JSON.stringify(progress.wallet) !== before ? progress.wallet : null);
+    }, true));
+    game.scene.bringToTop('shop');
   });
 }
 
@@ -116,20 +200,23 @@ async function showRoom(roomId: string): Promise<void> {
   if (!api) return showMap();
   try {
     const view = await api.room(roomId);
-    show('room', { theme, dpr, view, clockOffset, onPlay: () => void playRoom(roomId), onMap: () => showMap() });
+    show('room', { theme, dpr, view, clockOffset, onPlay: () => showStart(view.levelId, { id: roomId }), onMap: () => showMap() });
   } catch {
     message(t.room.title, t.room.notFound, { button: { label: t.toMap, onClick: () => showMap() } });
   }
 }
 
-async function playRoom(roomId: string): Promise<void> {
+async function playRoom(roomId: string, boosters: Item[] = []): Promise<void> {
   if (!api) return;
   try {
-    const attempt = await api.startRoom(roomId);
+    const attempt = await api.startRoom(roomId, boosters);
     progress.lives = livesToClient(attempt.lives);
+    progress.wallet = attempt.wallet;
     // новичок из чата (PRD): подсказки на первых трёх ходах
     const newcomer = progress.maxLevel <= 1 && Object.keys(progress.stars).length === 0;
-    startScene(attempt.level, attempt.seed, attempt.attemptId, progress.lives, { roomId, eagerHints: newcomer ? 3 : 0 });
+    startScene(attempt.level, attempt.seed, attempt.attemptId, progress.lives, {
+      roomId, eagerHints: newcomer ? 3 : 0, assist: attempt.assist, startBoosters: attempt.startBoosters,
+    });
   } catch (e) {
     if (e instanceof ApiError && e.code === 'no_lives') noLives(livesToClient(e.body.lives as LivesView), () => void showRoom(roomId));
     else await showRoom(roomId);
@@ -138,20 +225,38 @@ async function playRoom(roomId: string): Promise<void> {
 
 function noLives(lives: LivesView, back: () => void): void {
   progress.lives = lives;
+  const refill = async () => {
+    if (!api) return;
+    try {
+      const r = await api.refillLives();
+      progress.lives = livesToClient(r.lives);
+      progress.wallet = r.wallet;
+      back();
+    } catch (e) {
+      // не хватает кристаллов — магазин поверх, потом ещё попытка
+      if (e instanceof ApiError && e.code === 'no_crystals' && (await openShopOverlay())) await refill();
+    }
+  };
   message(t.noLivesTitle, t.noLivesText, {
     ...(lives.nextLifeAt ? { countdown: { until: lives.nextLifeAt, label: t.nextLife } } : {}),
-    button: { label: t.toMap, onClick: () => showMap() },
-    ...(api ? { secondary: { label: t.share.askLife, onClick: () => void shareToChat('help', back) } } : {}),
+    ...(api && shopView
+      ? {
+        button: { label: t.economy.refill(shopView.refillLives), onClick: () => void refill() },
+        secondary: { label: t.share.askLife, onClick: () => void shareToChat('help', back) },
+        tertiary: { label: t.toMap, onClick: () => showMap() },
+      }
+      : { button: { label: t.toMap, onClick: () => showMap() } }),
   });
 }
 
-async function play(levelId: number): Promise<void> {
+async function play(levelId: number, boosters: Item[] = []): Promise<void> {
   history.replaceState(null, '', `?${new URLSearchParams({ ...Object.fromEntries(params), level: String(levelId) })}`);
   if (!api) return startScene(bundled.get(levelId) ?? bundled.get(1)!, randomSeed(), null, null);
   try {
-    const attempt = await api.start(levelId);
+    const attempt = await api.start(levelId, boosters);
     progress.lives = livesToClient(attempt.lives);
-    startScene(attempt.level, attempt.seed, attempt.attemptId, progress.lives);
+    progress.wallet = attempt.wallet;
+    startScene(attempt.level, attempt.seed, attempt.attemptId, progress.lives, { assist: attempt.assist, startBoosters: attempt.startBoosters });
   } catch (e) {
     if (e instanceof ApiError && e.code === 'no_lives') {
       noLives(livesToClient(e.body.lives as LivesView), () => showMap(levelId));
@@ -180,7 +285,7 @@ function recordStars(levelId: number, stars: number): void {
 
 function startScene(
   level: LevelDef, seed: number, attemptId: string | null, lives: LivesView | null,
-  opts: { roomId?: string; eagerHints?: number } = {},
+  opts: { roomId?: string; eagerHints?: number; assist?: number; startBoosters?: readonly Item[] } = {},
 ): void {
   const roomId = opts.roomId ?? null;
   const onGameOver = async (match: Match3Game, timedOut: boolean): Promise<GameOverResult> => {
@@ -192,6 +297,7 @@ function startScene(
     const r = await api.finish(attemptId, match.history, timedOut);
     progress.maxLevel = Math.max(progress.maxLevel, r.maxLevel);
     progress.lives = livesToClient(r.lives);
+    progress.wallet = r.wallet;
     // в комнате звёзды не идут в прогресс карты
     if (r.result === 'won' && !roomId) recordStars(level.id, r.stars);
     return {
@@ -211,6 +317,20 @@ function startScene(
   show('game', {
     level, seed, theme, dpr, lives, onGameOver, onExit, intros, track,
     room: roomId ? { id: roomId } : null, eagerHints: opts.eagerHints ?? 0,
+    assist: opts.assist ?? 0, startBoosters: opts.startBoosters ?? [],
+    wallet: api && attemptId ? progress.wallet : null, shop: api && attemptId ? shopView : null,
+    onBuyItem: buyItem,
+    onOpenShop: openShopOverlay,
+    onExtend: async (match) => {
+      if (!api || !attemptId) return { status: 'error' };
+      try {
+        const r = await api.extend(attemptId, match.history);
+        progress.wallet = r.wallet;
+        return { status: 'ok', wallet: r.wallet };
+      } catch (e) {
+        return { status: e instanceof ApiError && e.code === 'no_crystals' ? 'no_crystals' : 'error' };
+      }
+    },
     onFinish: (action) => {
       if (action === 'map') return showMap(roomId ? undefined : level.id);
       if (roomId) return void (action === 'retry' ? playRoom(roomId) : showRoom(roomId));
@@ -247,6 +367,8 @@ async function boot(): Promise<void> {
       progress.levelCount = me.levelCount;
       progress.stars = { ...me.levels };
       progress.lives = livesToClient(me.lives);
+      progress.wallet = me.wallet;
+      shopView = await api.shop().catch(() => null);
       track({ name: 'session_start', props: { platform: telegram.inTelegram ? 'telegram' : 'web' } });
     } catch {
       api = null;
@@ -272,6 +394,8 @@ game.events.once('ready', () => {
   game.scene.add('message', MessageScene, false);
   game.scene.add('map', MapScene, false);
   game.scene.add('room', RoomScene, false);
+  game.scene.add('start', StartScene, false);
+  game.scene.add('shop', ShopScene, false);
   // Boot рисует текстуры и сразу передаёт управление
   game.scene.add('boot', BootScene, true, { onReady: () => void boot() });
 });

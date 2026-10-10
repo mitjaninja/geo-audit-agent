@@ -1,7 +1,9 @@
 import Phaser from 'phaser';
 import { gameOptionsFromLevel, Match3Game } from '@sakura/core';
-import type { CascadeStep, GameEvent, IntroLine, LevelDef, Pos, Swap } from '@sakura/core';
-import type { ClientEvent, LivesView } from '../api.ts';
+import type { CascadeStep, GameEvent, GameOptions, IntroLine, LevelDef, Move, Pos, Swap } from '@sakura/core';
+import type { ClientEvent, Item, LivesView, ShopView, WalletView } from '../api.ts';
+import { GAME_ITEMS, ITEM_INFO, nextExtendPrice } from '../economy.ts';
+import { goalLabel } from '../i18n.ts';
 import { formatTime, t } from '../i18n.ts';
 import { swipeToSwap, tap } from '../input.ts';
 import { cellAt, cellCenter, computeLayout } from '../layout.ts';
@@ -17,6 +19,9 @@ import { Hud } from './hud.ts';
 export interface GameSceneData {
   readonly level: LevelDef;
   readonly seed: number;
+  /** Скрытое облегчение и бустеры старта — от сервера; партия должна совпасть с его реплеем. */
+  readonly assist: number;
+  readonly startBoosters: readonly Item[];
   readonly theme: Theme;
   /** Масштаб: canvas рисуется в device pixels (до 2×), координаты макета — в CSS px. */
   readonly dpr: number;
@@ -29,6 +34,15 @@ export interface GameSceneData {
   readonly room: { readonly id: string } | null;
   /** Новичок из чата (PRD): подсказка хода сразу, на первых N ходах. */
   readonly eagerHints: number;
+  /** Кошелёк и витрина; null — офлайн: бустеров и «+5 ходов» нет. */
+  readonly wallet: WalletView | null;
+  readonly shop: ShopView | null;
+  /** Купить бустер за кристаллы; null — не хватает кристаллов. */
+  readonly onBuyItem: (item: Item) => Promise<WalletView | null>;
+  /** «+5 ходов»: сервер проверяет и списывает кристаллы. */
+  readonly onExtend: (game: Match3Game) => Promise<{ status: 'ok' | 'no_crystals' | 'error'; wallet?: WalletView }>;
+  /** Магазин поверх игры; новый кошелёк после покупки или null. */
+  readonly onOpenShop: () => Promise<WalletView | null>;
   /** Игрок вышел посреди уровня (попытка закрывается как проигрыш). */
   readonly onExit: (game: Match3Game) => Promise<void>;
   /** Уровни, где вступление и обучающий ход уже показаны. */
@@ -46,6 +60,18 @@ export interface GameOverResult {
 }
 
 const key = (p: Pos) => `${p.row},${p.col}`;
+
+/** Параметры партии ровно как на сервере (service.optionsFor): уровень, сид, облегчение, бустеры старта. */
+export function gameOptionsForAttempt(level: LevelDef, seed: number, assist: number, startBoosters: readonly Item[]): GameOptions {
+  const opts = gameOptionsFromLevel(level, seed);
+  return {
+    ...opts,
+    ...(assist > 0 ? { assist } : {}),
+    ...(startBoosters.length > 0 ? {
+      startBoosters: { beamBomb: startBoosters.includes('beamBomb'), rainbow: startBoosters.includes('rainbow'), extraMoves: startBoosters.includes('extraMoves') },
+    } : {}),
+  };
+}
 const FONT = 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
 
 /** Длительности анимаций, мс. */
@@ -85,6 +111,13 @@ export class GameScene extends Phaser.Scene {
   private lastInput = 0;
   /** Идёт вступление — ввод закрыт. */
   onboarding = false;
+  /** Кошелёк в этой партии: бустеры тратятся сразу (сервер спишет их по реплею при финише). */
+  wallet: WalletView | null = null;
+  /** Бустер, который ждёт цель: молот — клетку, свободный обмен — пару клеток. */
+  armed: Item | null = null;
+  /** Панель бустеров под полем; координаты — для e2e. */
+  bar: { item: Item; x: number; y: number; ring: Phaser.GameObjects.Arc; badge: Phaser.GameObjects.Text; icon: Phaser.GameObjects.Image; zone: Phaser.GameObjects.Zone }[] = [];
+  private dialogOpen = false;
 
   constructor() {
     super('game');
@@ -104,7 +137,7 @@ export class GameScene extends Phaser.Scene {
     this.selected = null;
     this.busy = false;
     this.finished = false;
-    this.match = new Match3Game(gameOptionsFromLevel(data.level, data.seed));
+    this.match = new Match3Game(gameOptionsForAttempt(data.level, data.seed, data.assist, data.startBoosters));
     this.timeLeft = data.level.timeLimit;
     // таймер запускается после вступления, чтобы реплики не съедали время
     this.deadline = undefined;
@@ -124,9 +157,15 @@ export class GameScene extends Phaser.Scene {
     this.pieceLayer.setMask(this.maskShape.createGeometryMask());
     this.selectImage = this.add.image(0, 0, 'select').setDepth(4).setVisible(false);
     this.hud = new Hud(this, data.level, data.theme, data.dpr, data.lives, () => this.confirmExit());
+    this.wallet = data.wallet;
+    this.armed = null;
+    this.dialogOpen = false;
+    this.bar = [];
+    if (data.wallet && data.shop) this.makeBar();
 
     this.computeLayout();
     this.syncFromCore(false);
+    this.placeBar();
     this.hud.place(this.layout);
     this.hud.update(this.match, this.timeLeft);
 
@@ -156,6 +195,7 @@ export class GameScene extends Phaser.Scene {
   };
 
   override update(time: number): void {
+    if (this.dialogOpen) this.lastInput = time;
     // новичку из чата — подсказка почти сразу на первых ходах, остальным — после паузы
     const hintDelay = this.match.history.length < this.data_.eagerHints ? 600 : HINT_DELAY_MS;
     if (!this.busy && !this.finished && !this.onboarding && !this.gate && this.hintObjects.length === 0
@@ -307,6 +347,7 @@ export class GameScene extends Phaser.Scene {
     this.hud.place(this.layout);
     this.hud.update(this.match, this.timeLeft);
     this.syncFromCore(false);
+    this.placeBar();
   }
 
   private at(p: Pos): { x: number; y: number } {
@@ -399,6 +440,7 @@ export class GameScene extends Phaser.Scene {
 
   private onDown(p: Phaser.Input.Pointer): void {
     this.lastInput = this.time.now;
+    if (this.dialogOpen) return;
     this.clearHint();
     if (this.busy || this.finished || this.onboarding) return;
     const at = cellAt(this.layout, p.x, p.y, this.match.board.width, this.match.board.height);
@@ -411,16 +453,19 @@ export class GameScene extends Phaser.Scene {
     const swap = swipeToSwap(s.at, p.x - s.x, p.y - s.y, this.layout.cell);
     if (!swap) return;
     s.swiped = true;
-    void this.trySwap(swap);
+    if (this.armed === 'freeSwap') void this.useArmed({ booster: 'freeSwap', a: swap.a, b: swap.b });
+    else void this.trySwap(swap);
   }
 
   private onUp(p: Phaser.Input.Pointer): void {
     const s = this.pointerStart;
     this.pointerStart = null;
-    if (!s || s.swiped || this.busy || this.finished) return;
+    if (!s || s.swiped || this.busy || this.finished || this.dialogOpen) return;
     const at = cellAt(this.layout, p.x, p.y, this.match.board.width, this.match.board.height);
     if (!at) return;
+    if (this.armed === 'hammer') return void this.useArmed({ booster: 'hammer', at });
     const r = tap(this.selected, at);
+    if (r.kind === 'swap' && this.armed === 'freeSwap') return void this.useArmed({ booster: 'freeSwap', a: r.swap.a, b: r.swap.b });
     if (r.kind === 'swap') void this.trySwap(r.swap);
     else if (r.kind === 'select') {
       if (!this.match.board.isMovable(r.at)) return;
@@ -440,7 +485,7 @@ export class GameScene extends Phaser.Scene {
 
   /** Ход игрока; также точка входа для e2e-теста. */
   async trySwap(swap: Swap): Promise<boolean> {
-    if (this.busy || this.finished || this.onboarding || this.match.status !== 'playing') return false;
+    if (this.busy || this.finished || this.onboarding || this.dialogOpen || this.match.status !== 'playing') return false;
     if (this.gate && !sameSwap(swap, this.gate)) {
       // в обучении — только показанный ход
       telegram.haptic('error');
@@ -452,11 +497,16 @@ export class GameScene extends Phaser.Scene {
       for (const o of this.tutorialObjects) o.destroy();
       this.tutorialObjects = [];
     }
+    return this.act(swap);
+  }
+
+  /** Любое действие игрока — свап, бустер, докупка ходов: проиграть события, затем развязка. */
+  async act(move: Move): Promise<boolean> {
     this.clearHint();
     this.lastInput = this.time.now;
     this.selected = null;
     this.selectImage.setVisible(false);
-    const res = this.match.swap(swap);
+    const res = this.match.apply(move);
     this.busy = true;
     try {
       await this.play(res.events);
@@ -472,8 +522,169 @@ export class GameScene extends Phaser.Scene {
     this.hud.update(this.match, this.timeLeft);
     // таймер мог истечь во время анимаций — поражение фиксируем только после хода
     if (this.timeLeft === 0 && this.match.status === 'playing') this.match.timeUp();
-    if (this.match.status !== 'playing') this.finish();
+    if (this.match.status !== 'playing') {
+      if (this.canExtend()) this.offerExtend();
+      else this.finish();
+    }
     return res.valid;
+  }
+
+  // ---------- бустеры и «+5 ходов» ----------
+
+  private makeBar(): void {
+    const { theme, dpr: k } = this.data_;
+    for (const item of GAME_ITEMS) {
+      const ring = this.add.circle(0, 0, 30 * k, 0xffffff, 0).setStrokeStyle(5 * k, hexToInt(theme.button), 1).setVisible(false).setDepth(6);
+      const icon = this.add.image(0, 0, `b-${item}`).setDepth(6);
+      const badge = this.add.text(0, 0, '', {
+        fontFamily: FONT, fontSize: `${Math.round(12 * k)}px`, fontStyle: 'bold', color: '#ffffff', backgroundColor: '#ff6fa8',
+        padding: { x: 5 * k, y: 2 * k },
+      }).setOrigin(0.5).setDepth(7);
+      const zone = this.add.zone(0, 0, 64 * k, 64 * k).setDepth(7).setInteractive({ useHandCursor: true });
+      zone.on('pointerup', () => void this.onBarTap(item));
+      this.bar.push({ item, x: 0, y: 0, ring, badge, icon, zone });
+    }
+    this.refreshBar();
+  }
+
+  private placeBar(): void {
+    if (this.bar.length === 0) return;
+    const k = this.data_.dpr;
+    const { boardY, cell } = this.layout;
+    const y = Math.min(this.scale.height - 48 * k, boardY + cell * this.match.board.height + 52 * k);
+    this.bar.forEach((b, i) => {
+      const x = this.scale.width / 2 + (i - 1) * 92 * k;
+      b.x = x;
+      b.y = y;
+      b.ring.setPosition(x, y);
+      b.icon.setPosition(x, y).setDisplaySize(52 * k, 52 * k);
+      b.badge.setPosition(x + 22 * k, y + 22 * k);
+      b.zone.setPosition(x, y);
+    });
+  }
+
+  private refreshBar(): void {
+    for (const b of this.bar) {
+      const n = this.wallet?.items[b.item] ?? 0;
+      b.badge.setText(n > 0 ? String(n) : '+');
+      b.ring.setVisible(this.armed === b.item);
+    }
+  }
+
+  private async onBarTap(item: Item): Promise<void> {
+    if (this.busy || this.finished || this.onboarding || this.gate || this.dialogOpen || this.match.status !== 'playing') return;
+    if (this.armed === item) {
+      this.armed = null;
+      this.refreshBar();
+      return;
+    }
+    if ((this.wallet?.items[item] ?? 0) < 1 && !(await this.buyItemDialog(item))) return;
+    telegram.haptic('tap');
+    if (item === 'shuffle') {
+      await this.useArmed({ booster: 'shuffle' });
+      return;
+    }
+    this.armed = item;
+    this.refreshBar();
+    this.toast(item === 'hammer' ? t.economy.pickCell : t.economy.pickSwap);
+  }
+
+  /** Купить бустер во время игры: диалог с ценой; не хватает кристаллов — магазин. */
+  private buyItemDialog(item: Item): Promise<boolean> {
+    const price = this.data_.shop!.itemPrices[item];
+    const { theme, dpr: k } = this.data_;
+    return new Promise((resolve) => {
+      this.dialogOpen = true;
+      const close = this.dialog({
+        title: ITEM_INFO[item].name,
+        height: 260,
+        body: (y, pw) => [this.add.text(this.scale.width / 2, y + 72 * k, ITEM_INFO[item].hint, {
+          fontFamily: FONT, fontSize: `${Math.round(15 * k)}px`, color: theme.hint, align: 'center', wordWrap: { width: pw - 40 * k },
+        }).setOrigin(0.5, 0)],
+        buttons: [
+          {
+            label: t.economy.buyItem(ITEM_INFO[item].name, price), primary: true, onClick: () => {
+              close();
+              void (async () => {
+                let w = await this.data_.onBuyItem(item);
+                // не хватает кристаллов — магазин поверх игры, потом ещё одна попытка
+                if (!w && (await this.data_.onOpenShop())) w = await this.data_.onBuyItem(item);
+                this.dialogOpen = false;
+                if (w) {
+                  this.wallet = w;
+                  this.refreshBar();
+                }
+                resolve(w !== null);
+              })();
+            },
+          },
+          { label: t.economy.cancel, primary: false, onClick: () => { close(); this.dialogOpen = false; resolve(false); } },
+        ],
+      });
+    });
+  }
+
+  private async useArmed(move: Extract<Move, { booster: string }>): Promise<void> {
+    const item = move.booster;
+    this.armed = null;
+    const ok = await this.act(move);
+    if (ok && this.wallet) {
+      this.wallet = { ...this.wallet, items: { ...this.wallet.items, [item]: this.wallet.items[item] - 1 } };
+    }
+    this.refreshBar();
+  }
+
+  private canExtend(): boolean {
+    return this.match.status === 'lost' && this.match.movesLeft === 0 && this.data_.level.timeLimit === undefined
+      && this.data_.shop !== null && this.wallet !== null;
+  }
+
+  /** PRD: окно «+5 ходов» с прогрессом до цели — подчеркнуть близость к победе. */
+  private offerExtend(): void {
+    const shop = this.data_.shop!;
+    const price = nextExtendPrice(shop, this.match.extraMovesBought);
+    const { theme, dpr: k } = this.data_;
+    this.data_.track({ name: 'moves_offer_shown', levelId: this.data_.level.id, props: { price, n: this.match.extraMovesBought + 1 } });
+    const left = this.match.goalProgress().filter((g) => !g.done)
+      .map((g) => `${goalLabel(g.goal)} ${g.goal.type === 'score' ? g.target - g.current : g.target - g.current}`).join(', ');
+    const done = this.match.goalProgress().reduce((s, g) => s + Math.min(1, g.target > 0 ? g.current / g.target : 1), 0) / Math.max(1, this.match.goalProgress().length);
+    this.dialogOpen = true;
+    const close = this.dialog({
+      title: t.economy.extendTitle,
+      height: 300,
+      body: (y, pw) => {
+        const W = this.scale.width;
+        const bw = pw - 64 * k;
+        const bg = this.add.graphics().fillStyle(hexToInt(theme.hint), 0.25).fillRoundedRect(W / 2 - bw / 2, y + 70 * k, bw, 14 * k, 7 * k)
+          .fillStyle(hexToInt(theme.button), 1).fillRoundedRect(W / 2 - bw / 2, y + 70 * k, Math.max(14 * k, bw * done), 14 * k, 7 * k);
+        const txt = this.add.text(W / 2, y + 100 * k, t.economy.extendText(left), {
+          fontFamily: FONT, fontSize: `${Math.round(14 * k)}px`, color: theme.hint, align: 'center', wordWrap: { width: pw - 40 * k },
+        }).setOrigin(0.5, 0);
+        return [bg, txt];
+      },
+      buttons: [
+        { label: t.economy.extendBuy(shop.extendMoves, price), primary: true, onClick: () => { close(); void this.buyExtension(); } },
+        { label: t.economy.giveUp, primary: false, onClick: () => { close(); this.dialogOpen = false; this.finish(); } },
+      ],
+    });
+  }
+
+  private async buyExtension(): Promise<void> {
+    const r = await this.data_.onExtend(this.match);
+    if (r.status === 'no_crystals') {
+      const w = await this.data_.onOpenShop();
+      if (w) this.wallet = w;
+      this.offerExtend();
+      return;
+    }
+    if (r.status === 'error') {
+      this.dialogOpen = false;
+      this.finish();
+      return;
+    }
+    if (r.wallet) this.wallet = r.wallet;
+    this.dialogOpen = false;
+    await this.act({ extraMoves: this.data_.shop!.extendMoves });
   }
 
   // ---------- анимации ----------
@@ -519,6 +730,16 @@ export class GameScene extends Phaser.Scene {
           ]);
           break;
         }
+        case 'booster':
+          if (e.booster === 'hammer' && e.at) {
+            const c = this.at(e.at);
+            this.sparkle(c.x, c.y);
+            this.cameras.main.shake(120, 0.006);
+          }
+          break;
+        case 'extraMoves':
+          this.toast(`+${e.moves} ${t.moves.toLowerCase()}`);
+          break;
         case 'finale':
           if (e.bonus > 0) this.toast(t.bonus(e.bonus));
           break;
@@ -773,7 +994,7 @@ export class GameScene extends Phaser.Scene {
   /** Выход посреди уровня: подтверждение, потом партия закрывается как брошенная. */
   private confirmExit(): void {
     // во время реплик тап по ✕ только листает их
-    if (this.finished || this.busy || this.onboarding) return;
+    if (this.finished || this.busy || this.onboarding || this.dialogOpen) return;
     const { theme, dpr: k } = this.data_;
     const W = this.scale.width;
     const close = this.dialog({
