@@ -27,6 +27,7 @@ export interface ShopView {
   readonly packs: Readonly<Record<'pack10' | 'pack50' | 'pack100' | 'pack250' | 'pack500', { crystals: number; stars: number; bonus: number; title: string }>>;
   readonly starter: { readonly stars: number; readonly crystals: number; readonly items: Partial<Record<Item, number>>; readonly infiniteLivesMs: number };
   readonly piggy: { readonly stars: number; readonly max: number; readonly minToBreak: number };
+  readonly social?: { readonly referralCrystals: number; readonly referralLevel: number; readonly giftsPerDay: number };
 }
 
 export interface Me {
@@ -37,6 +38,8 @@ export interface Me {
   readonly levels: Record<string, { readonly stars: number; readonly bestScore: number }>;
   readonly levelCount: number;
   readonly serverTime: number;
+  /** Закрытые ворота нового района, у которых стоит игрок. */
+  readonly gate?: GateView | null;
   /** Ходы и время уровней, сдвинутые remote config на сервере. */
   readonly levelOverrides?: Record<string, { readonly moves?: number; readonly timeLimit?: number }>;
 }
@@ -62,6 +65,43 @@ export interface FinishResult {
   readonly wallet: WalletView;
   /** Попытка в комнате чата: место в рейтинге. */
   readonly room?: { readonly id: string; readonly place: number; readonly players: number };
+  /** Победа привела к воротам нового района. */
+  readonly gate?: GateView;
+}
+
+/** Ворота района: 3 ключа от друзей, или подождать до unlockAt, или price кристаллов. */
+export interface GateView {
+  readonly episode: number;
+  readonly levelId: number;
+  readonly keys: number;
+  readonly needed: number;
+  readonly unlockAt: number;
+  readonly price: number;
+}
+
+export interface MailItem {
+  readonly id: number;
+  readonly kind: 'life' | 'ask_life' | 'ask_key';
+  readonly from: { readonly id: number; readonly name: string };
+  readonly episode: number | null;
+  readonly createdAt: number;
+}
+
+export interface FriendsView {
+  readonly friends: readonly { readonly id: number; readonly name: string; readonly maxLevel: number; readonly sentToday: boolean }[];
+  readonly giftsLeft: number;
+  readonly askedToday: boolean;
+  readonly inbox: readonly MailItem[];
+  /** Ссылка-приглашение (fr<id>); null — бот не настроен. */
+  readonly inviteLink: string | null;
+}
+
+export interface LevelFriend {
+  readonly place: number;
+  readonly name: string;
+  readonly score: number;
+  readonly stars: number;
+  readonly me: boolean;
 }
 
 export interface RoomView {
@@ -164,6 +204,14 @@ export interface Api {
   claimChest(episode: number, tier: number): Promise<MetaClaim>;
   claimStuck(): Promise<MetaClaim>;
   spin(): Promise<MetaClaim & { prize: string }>;
+  friends(): Promise<FriendsView>;
+  sendLife(friendId: number): Promise<{ giftsLeft: number }>;
+  askLives(): Promise<{ asked: number }>;
+  /** Письмо: принять жизнь / подарить в ответ / дать ключ. */
+  mail(id: number): Promise<{ wallet: WalletView; lives: LivesView }>;
+  levelFriends(levelId: number): Promise<{ top: LevelFriend[] }>;
+  askKeys(): Promise<{ asked: number }>;
+  buyGate(): Promise<{ wallet: WalletView }>;
 }
 
 export function createApi(auth: Auth, base = '', fetchImpl: typeof fetch = (...a) => fetch(...a)): Api {
@@ -198,5 +246,12 @@ export function createApi(auth: Auth, base = '', fetchImpl: typeof fetch = (...a
     claimChest: (episode, tier) => call('POST', '/api/meta/chests', { episode, tier }),
     claimStuck: () => call('POST', '/api/meta/stuck'),
     spin: () => call('POST', '/api/meta/wheel'),
+    friends: () => call<FriendsView>('GET', '/api/friends'),
+    sendLife: (friendId) => call('POST', `/api/friends/${friendId}/life`),
+    askLives: () => call('POST', '/api/friends/ask'),
+    mail: (id) => call('POST', `/api/mail/${id}`),
+    levelFriends: (levelId) => call('GET', `/api/levels/${levelId}/friends`),
+    askKeys: () => call('POST', '/api/gate/ask'),
+    buyGate: () => call('POST', '/api/gate/buy'),
   };
 }

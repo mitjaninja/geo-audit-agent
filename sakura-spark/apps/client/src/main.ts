@@ -2,7 +2,11 @@ import Phaser from 'phaser';
 import { parseLevel } from '@sakura/core';
 import type { LevelDef, Match3Game } from '@sakura/core';
 import { ApiError, createApi } from './api.ts';
-import type { Api, Auth, ClientEvent, Item, LivesView, MetaView, ProductId, ShopView, WalletView } from './api.ts';
+import type { Api, Auth, ClientEvent, FriendsView, GateView, Item, LivesView, MetaView, ProductId, ShopView, WalletView } from './api.ts';
+import { FriendsScene } from './scenes/FriendsScene.ts';
+import type { FriendAction, FriendsData } from './scenes/FriendsScene.ts';
+import { GateScene } from './scenes/GateScene.ts';
+import type { GateData } from './scenes/GateScene.ts';
 import { metaBadges } from './meta.ts';
 import { DailyScene } from './scenes/DailyScene.ts';
 import type { DailyData, MetaClaimRequest } from './scenes/DailyScene.ts';
@@ -80,10 +84,13 @@ const progress = {
 };
 let shopView: ShopView | null = null;
 let metaView: MetaView | null = null;
+let friendsView: FriendsView | null = null;
+/** Закрытые ворота района, у которых стоит игрок. */
+let gate: GateView | null = null;
 
-const SCENES = ['game', 'message', 'map', 'room', 'start', 'shop', 'daily', 'wheel'] as const;
+const SCENES = ['game', 'message', 'map', 'room', 'start', 'shop', 'daily', 'wheel', 'friends', 'gate'] as const;
 type SceneKey = (typeof SCENES)[number];
-function show(scene: SceneKey, data: GameSceneData | MessageData | MapData | RoomData | StartData | ShopData | DailyData | WheelData): void {
+function show(scene: SceneKey, data: GameSceneData | MessageData | MapData | RoomData | StartData | ShopData | DailyData | WheelData | FriendsData | GateData): void {
   for (const key of SCENES) if (key !== scene && game.scene.isActive(key)) game.scene.stop(key);
   if (game.scene.isActive(scene)) game.scene.getScene(scene)!.scene.restart(data);
   else game.scene.start(scene, data);
@@ -107,6 +114,87 @@ function showMap(focus?: number): void {
     onDaily: api && metaView ? () => openDaily(() => showMap(focus)) : null,
     onWheel: api && metaView ? () => openWheel(() => showMap(focus)) : null,
     ...(metaView ? { dailyBadge: metaBadges(metaView).daily, wheelBadge: metaBadges(metaView).wheel } : {}),
+    ...(friendsView ? { friends: friendsView.friends, friendsBadge: friendsView.inbox.length > 0 } : {}),
+    onFriends: api && friendsView ? () => openFriends(() => showMap(focus)) : null,
+  });
+}
+
+const FRIEND_ERRORS: Readonly<Record<string, string>> = {
+  lives_full: 'Жизни и так полные — прими подарок, когда потратишь',
+  limit: 'На сегодня подарки кончились',
+  already: 'Уже сделано',
+  not_friends: 'Это не твой друг',
+};
+
+function openFriends(back: () => void): void {
+  if (!api || !friendsView) return back();
+  const link = friendsView.inviteLink;
+  show('friends', {
+    theme, dpr, view: friendsView, onClose: back,
+    referral: { crystals: shopView?.social?.referralCrystals ?? 20, level: shopView?.social?.referralLevel ?? 10 },
+    onInvite: telegram.inTelegram && link
+      ? () => telegram.openLink(`https://t.me/share/url?url=${encodeURIComponent(link)}&text=${encodeURIComponent(t.share.inviteText)}`)
+      : null,
+    onAction: async (a: FriendAction) => {
+      let notice: string;
+      try {
+        if (a.kind === 'send') {
+          await api!.sendLife(a.id);
+          notice = 'Жизнь отправлена ❤';
+        } else if (a.kind === 'ask') {
+          const r = await api!.askLives();
+          notice = r.asked > 0 ? `Попросили у друзей: ${r.asked}` : 'Сегодня уже просили';
+        } else {
+          const r = await api!.mail(a.id);
+          progress.wallet = r.wallet;
+          progress.lives = livesToClient(r.lives);
+          notice = 'Готово!';
+        }
+      } catch (e) {
+        notice = e instanceof ApiError ? FRIEND_ERRORS[e.code] ?? 'Не получилось — попробуй ещё раз' : 'Нет связи с сервером';
+      }
+      friendsView = await api!.friends().catch(() => friendsView);
+      return { ...(friendsView ? { view: friendsView } : {}), notice };
+    },
+  });
+}
+
+/** Ворота района: ключи от друзей, ожидание или кристаллы. */
+function showGate(g: GateView): void {
+  if (!api) return showMap();
+  gate = g;
+  show('gate', {
+    theme, dpr, gate: g, levelCount: progress.levelCount, crystals: progress.wallet?.crystals ?? 0, clockOffset,
+    hasFriends: (friendsView?.friends.length ?? 0) > 0,
+    onBack: () => showMap(g.levelId),
+    onAsk: async () => {
+      try {
+        const r = await api!.askKeys();
+        return r.asked > 0 ? `Попросили ключ у друзей: ${r.asked}` : 'Сегодня уже просили';
+      } catch {
+        return 'Не получилось — попробуй ещё раз';
+      }
+    },
+    onBuy: async () => {
+      try {
+        const r = await api!.buyGate();
+        progress.wallet = r.wallet;
+        gate = null;
+        showStart(g.levelId);
+        return { opened: true };
+      } catch (e) {
+        if (e instanceof ApiError && e.code === 'no_crystals') {
+          await openShopOverlay();
+          return { opened: false, notice: t.economy.notEnough };
+        }
+        return { opened: false, notice: 'Не получилось — попробуй ещё раз' };
+      }
+    },
+    onOpen: () => void (async () => {
+      gate = (await api!.me().catch(() => null))?.gate ?? null;
+      if (gate) showGate(gate);
+      else showStart(g.levelId);
+    })(),
   });
 }
 
@@ -156,11 +244,13 @@ async function claimMeta(c: MetaClaimRequest) {
 
 /** Мета меняется от игр (задания, звёзды для сундуков): обновить к возврату на карту. */
 async function refreshMeta(): Promise<void> {
-  if (api) metaView = await api.meta().catch(() => metaView);
+  if (!api) return;
+  [metaView, friendsView] = await Promise.all([api.meta().catch(() => metaView), api.friends().catch(() => friendsView)]);
 }
 
 /** Экран старта уровня с бустерами (онлайн); офлайн — сразу в игру. */
 function showStart(levelId: number, room?: { id: string }): void {
+  if (!room && gate && levelId === gate.levelId) return showGate(gate);
   const file = bundled.get(levelId);
   // в комнате уровень как в файле — у всех чата одинаковый; на карте — со сдвигом remote config
   const level = file && !room ? { ...file, ...levelOverrides[levelId] } : file;
@@ -174,6 +264,7 @@ function showStart(levelId: number, room?: { id: string }): void {
     onPlay: (boosters: Item[]) => void (room ? playRoom(room.id, boosters) : play(levelId, boosters)),
     onBack: () => (room ? void showRoom(room.id) : showMap(levelId)),
     onBuy: buyItem,
+    loadFriends: api && !room ? () => api!.levelFriends(levelId).then((r) => r.top) : null,
   });
 }
 
@@ -321,6 +412,8 @@ async function play(levelId: number, boosters: Item[] = []): Promise<void> {
   } catch (e) {
     if (e instanceof ApiError && e.code === 'no_lives') {
       noLives(livesToClient(e.body.lives as LivesView), () => showMap(levelId));
+    } else if (e instanceof ApiError && e.code === 'episode_locked') {
+      showGate(e.body.gate as GateView);
     } else if (e instanceof ApiError && e.code === 'level_locked') {
       await play(Number(e.body.maxLevel ?? 1));
     } else {
@@ -361,6 +454,7 @@ function startScene(
     progress.wallet = r.wallet;
     // в комнате звёзды не идут в прогресс карты
     if (r.result === 'won' && !roomId) recordStars(level.id, r.stars);
+    if (r.gate) gate = r.gate;
     // задания и сундуки зависят от партий — к возврату на карту значки будут свежими
     void refreshMeta();
     return {
@@ -435,7 +529,10 @@ async function boot(): Promise<void> {
       progress.lives = livesToClient(me.lives);
       progress.wallet = me.wallet;
       levelOverrides = me.levelOverrides ?? {};
-      [shopView, metaView] = await Promise.all([api.shop().catch(() => null), api.meta().catch(() => null)]);
+      gate = me.gate ?? null;
+      [shopView, metaView, friendsView] = await Promise.all([
+        api.shop().catch(() => null), api.meta().catch(() => null), api.friends().catch(() => null),
+      ]);
       track({ name: 'session_start', props: { platform: telegram.inTelegram ? 'telegram' : 'web' } });
     } catch {
       api = null;
@@ -467,6 +564,8 @@ game.events.once('ready', () => {
   game.scene.add('shop', ShopScene, false);
   game.scene.add('daily', DailyScene, false);
   game.scene.add('wheel', WheelScene, false);
+  game.scene.add('friends', FriendsScene, false);
+  game.scene.add('gate', GateScene, false);
   // Boot рисует текстуры и сразу передаёт управление
   game.scene.add('boot', BootScene, true, { onReady: () => void boot() });
 });

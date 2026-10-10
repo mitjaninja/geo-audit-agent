@@ -1,6 +1,6 @@
 import Phaser from 'phaser';
 import type { LevelDef } from '@sakura/core';
-import type { Item, ShopView, WalletView } from '../api.ts';
+import type { Item, LevelFriend, ShopView, WalletView } from '../api.ts';
 import { crystals, ITEM_INFO, START_ITEMS } from '../economy.ts';
 import { goalLabel, t } from '../i18n.ts';
 import { telegram } from '../telegram.ts';
@@ -20,6 +20,8 @@ export interface StartData {
   readonly onBack: () => void;
   /** Купить бустер за кристаллы; null — не вышло (не хватает кристаллов). */
   readonly onBuy: (item: Item) => Promise<WalletView | null>;
+  /** Рейтинг уровня среди друзей (PRD); null — офлайн или комната. */
+  readonly loadFriends?: (() => Promise<readonly LevelFriend[]>) | null;
 }
 
 /** Экран старта уровня (PRD: бустеры перед уровнем): цели и три бустера на выбор. */
@@ -52,7 +54,7 @@ export class StartScene extends Phaser.Scene {
     const H = this.scale.height;
     this.cameras.main.setBackgroundColor(theme.bg);
     const pw = Math.min(W - 32 * k, 380 * k);
-    const ph = 470 * k;
+    const ph = 500 * k;
     const x = (W - pw) / 2;
     const y = Math.max(telegram.insets().top * k + 16 * k, (H - ph) / 2);
     this.ui.panel(x, y, pw, ph);
@@ -86,8 +88,17 @@ export class StartScene extends Phaser.Scene {
     this.refreshToggles();
     this.ui.text(W / 2, y + 345 * k, `${t.economy.balance}: ${crystals(this.wallet.crystals)}`, 14, { color: theme.hint }).setName('balance');
 
-    this.ui.button(t.economy.play, W / 2, y + 392 * k, pw - 48 * k, 'primary', () => data.onPlay([...this.selected]));
-    this.ui.button(t.toMap, W / 2, y + 444 * k, pw - 48 * k, 'secondary', data.onBack);
+    const friendsLine = this.ui.text(W / 2, y + 374 * k, '', 13, { color: theme.text, wrap: pw - 40 * k, align: 'center' });
+    data.loadFriends?.().then((top) => {
+      if (!this.scene.isActive() || top.length === 0) return;
+      const fmt = (r: LevelFriend) => `${r.place}. ${r.me ? 'Ты' : r.name} ${r.score.toLocaleString('ru-RU')}`;
+      const mine = top.find((r) => r.me);
+      const shown = top.slice(0, 3);
+      if (mine && !shown.includes(mine)) shown.push(mine);
+      friendsLine.setText(`🏆 ${shown.map(fmt).join(' · ')}`);
+    }).catch(() => {});
+    this.ui.button(t.economy.play, W / 2, y + 422 * k, pw - 48 * k, 'primary', () => data.onPlay([...this.selected]));
+    this.ui.button(t.toMap, W / 2, y + 474 * k, pw - 48 * k, 'secondary', data.onBack);
     (globalThis as Record<string, unknown>).__sakuraStart = this;
   }
 

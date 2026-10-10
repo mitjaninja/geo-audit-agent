@@ -46,6 +46,11 @@ export interface MetaState {
   /** Когда игрок открыл свой текущий последний уровень, и на каком уровне уже получил помощь. */
   readonly maxLevelAt?: number;
   readonly stuckGift?: number;
+  /**
+   * Ворота районов (PRD «Помощь в разблокировке»): когда игрок дошёл до первого уровня района,
+   * кто из друзей дал ключ, открыт ли район (ключи, ожидание или кристаллы).
+   */
+  readonly gates?: Readonly<Record<string, { readonly reachedAt: number; readonly keys: readonly number[]; readonly open?: boolean }>>;
 }
 
 const HOUR = 3600_000;

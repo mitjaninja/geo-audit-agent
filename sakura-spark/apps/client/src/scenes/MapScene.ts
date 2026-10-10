@@ -5,6 +5,7 @@ import { episodeLit, episodes, LEVELS_PER_EPISODE, mapGeometry, nodeState, stars
 import type { MapGeometry } from '../map.ts';
 import { telegram } from '../telegram.ts';
 import { pieceKey } from '../textures.ts';
+import { avatarColor } from './FriendsScene.ts';
 import { hexToInt } from '../theme.ts';
 import type { Theme } from '../theme.ts';
 
@@ -28,6 +29,10 @@ export interface MapData {
   readonly dailyBadge?: boolean;
   readonly onWheel?: (() => void) | null;
   readonly wheelBadge?: boolean;
+  /** Друзья на карте (PRD): аватар стоит на их текущем уровне. */
+  readonly friends?: readonly { readonly id: number; readonly name: string; readonly maxLevel: number }[];
+  readonly onFriends?: (() => void) | null;
+  readonly friendsBadge?: boolean;
 }
 
 const FONT = 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
@@ -44,6 +49,7 @@ export class MapScene extends Phaser.Scene {
   shopButton: { x: number; y: number } | null = null;
   dailyButton: { x: number; y: number } | null = null;
   wheelButton: { x: number; y: number } | null = null;
+  friendsButton: { x: number; y: number } | null = null;
   /** Нажатие по кнопке поверх карты — чтобы тап не попал в узел уровня под ней. */
   private shareTapped = false;
 
@@ -56,6 +62,8 @@ export class MapScene extends Phaser.Scene {
     this.shareButton = null;
     this.shopButton = null;
     this.shareTapped = false;
+    // сцену остановили посреди нажатия (кнопка открыла другой экран) — старое касание не должно стать тапом
+    this.drag = null;
     const { theme, dpr: k, levelCount, maxLevel, stars } = data;
     const W = this.scale.width;
     const H = this.scale.height;
@@ -138,8 +146,8 @@ export class MapScene extends Phaser.Scene {
     const barY = insets.top * k + 8 * k;
     this.add.graphics().setScrollFactor(0).setDepth(10)
       .fillStyle(hexToInt(theme.panel), 0.92).fillRoundedRect(12 * k, barY, W - 24 * k, 48 * k, 16 * k);
-    this.livesText = this.add.text(28 * k, barY + 24 * k, '', {
-      fontFamily: FONT, fontSize: `${Math.round(16 * k)}px`, fontStyle: 'bold', color: theme.text,
+    this.livesText = this.add.text(24 * k, barY + 24 * k, '', {
+      fontFamily: FONT, fontSize: `${Math.round(14 * k)}px`, fontStyle: 'bold', color: theme.text,
     }).setOrigin(0, 0.5).setScrollFactor(0).setDepth(11);
     const totalStars = Object.values(stars).reduce((sum, v) => sum + v.stars, 0);
     const right = this.add.text(W - 28 * k, barY + 24 * k, `${data.crystals !== null ? `💎 ${data.crystals}   ` : ''}★ ${totalStars}`, {
@@ -188,6 +196,26 @@ export class MapScene extends Phaser.Scene {
     };
     this.dailyButton = data.onDaily ? round('🎁', barY + 84 * k, data.dailyBadge === true, data.onDaily) : null;
     this.wheelButton = data.onWheel ? round('🎡', barY + 142 * k, data.wheelBadge === true, data.onWheel) : null;
+    this.friendsButton = data.onFriends ? round('👥', barY + 200 * k, data.friendsBadge === true, data.onFriends) : null;
+
+    // друзья на своих уровнях: до трёх кружков у узла, сбоку от тропы
+    const byLevel = new Map<number, { id: number; name: string }[]>();
+    for (const f of data.friends ?? []) {
+      const lv = Math.min(Math.max(1, f.maxLevel), levelCount);
+      byLevel.set(lv, [...(byLevel.get(lv) ?? []), f]);
+    }
+    for (const [lv, fs] of byLevel) {
+      const n = g.node(lv);
+      const side = n.x < W / 2 ? 1 : -1;
+      fs.slice(0, 3).forEach((f, i) => {
+        const ax = n.x + side * (r + 20 * k + i * 22 * k);
+        const ay = n.y + 14 * k;
+        this.add.circle(ax, ay, 15 * k, avatarColor(f.id)).setStrokeStyle(2 * k, 0xffffff).setDepth(2);
+        this.add.text(ax, ay, (f.name || '?').slice(0, 1).toUpperCase(), {
+          fontFamily: FONT, fontSize: `${Math.round(13 * k)}px`, fontStyle: 'bold', color: '#ffffff',
+        }).setOrigin(0.5).setDepth(3);
+      });
+    }
 
     const focus = g.node(Math.min(data.focus ?? current, levelCount));
     this.cameras.main.setScroll(0, focus.y - H * 0.6);

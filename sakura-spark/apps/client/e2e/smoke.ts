@@ -383,6 +383,64 @@ try {
     await page.context().close();
   }
 
+  console.log('social: friends on the map, mail, gift a life, friends ranking on a level, district gate with keys');
+  {
+    await service.login({ id: 30, firstName: 'Мика' });
+    await service.login({ id: 31, firstName: 'Рэн' });
+    await service.claimLogin(30);
+    await service.befriend(30, 31, 'room');
+    const db = (store as any).db;
+    db.prepare('UPDATE users SET max_level = 16 WHERE id = 30').run();
+    db.prepare('UPDATE users SET max_level = 12 WHERE id = 31').run();
+    for (const [u, score] of [[30, 4200], [31, 5100]]) {
+      db.prepare('INSERT INTO level_progress (user_id, level_id, best_score, stars, wins) VALUES (?, 15, ?, 2, 1)').run(u, score);
+    }
+    // игрок только что дошёл до района 2 — ворота закрыты
+    await store.transact(30, (w) => ({ meta: { ...w.meta, gates: { 2: { reachedAt: Date.now(), keys: [] } } } }));
+    await service.sendLife(31, 30);
+    await store.saveLives(30, { lives: 3, updatedAt: Date.now(), infiniteUntil: 0 });
+    const { page, errors } = await open('?devUser=30');
+    await mapReady(page);
+    await g(page, 'm.scrollTo(13)');
+    await page.waitForTimeout(300);
+    await page.screenshot({ path: `${OUT}/20-map-friends.png` });
+    // рейтинг друзей на уровне 15
+    await clickCanvas(page, (await g(page, 'm.nodeOnScreen(15)')) as { x: number; y: number });
+    await startReady(page);
+    await page.waitForFunction(() => (globalThis as any).__sakuraStart.children.list.some((o: any) => o.text?.startsWith('🏆')));
+    await page.screenshot({ path: `${OUT}/21-start-friends.png` });
+    await clickCanvas(page, (await g(page, 'globalThis.__sakuraStart.buttons.find((b) => b.label === "На карту")')) as { x: number; y: number });
+    await mapReady(page);
+    // друзья: принять жизнь, подарить в ответ
+    await clickCanvas(page, (await g(page, 'm.friendsButton')) as { x: number; y: number });
+    const friendsReady = () => page.waitForFunction(() => (globalThis as any).__sakuraFriends?.scene.isActive() && (globalThis as any).__sakuraFriends.buttons.length > 0);
+    const friendsButton = (label: string) => g(page, `globalThis.__sakuraFriends.buttons.find((b) => b.label === ${JSON.stringify(label)})`) as Promise<{ x: number; y: number }>;
+    await friendsReady();
+    await page.waitForTimeout(200);
+    await page.screenshot({ path: `${OUT}/22-friends.png` });
+    await clickCanvas(page, await friendsButton('Принять'));
+    await page.waitForFunction(() => !(globalThis as any).__sakuraFriends.buttons.some((b: any) => b.label === 'Принять'));
+    assert.equal((await store.getUser(30))!.lives.lives, 4);
+    await friendsReady();
+    await clickCanvas(page, await friendsButton('❤ Подарить'));
+    await page.waitForFunction(() => (globalThis as any).__sakuraFriends.buttons.some((b: any) => b.label === '✓ ❤'));
+    assert.equal((await store.inbox(31, 10))[0]?.kind, 'life');
+    await friendsReady();
+    await clickCanvas(page, await friendsButton('Закрыть'));
+    await mapReady(page);
+    // уровень 16 за воротами района
+    await g(page, 'm.scrollTo(16)');
+    await clickCanvas(page, (await g(page, 'm.nodeOnScreen(16)')) as { x: number; y: number });
+    await page.waitForFunction(() => (globalThis as any).__sakuraGate?.scene.isActive() && (globalThis as any).__sakuraGate.buttons.length > 0);
+    await page.waitForTimeout(300);
+    await page.screenshot({ path: `${OUT}/23-gate.png` });
+    await clickCanvas(page, (await g(page, 'globalThis.__sakuraGate.buttons.find((b) => b.label === "Попросить ключи")')) as { x: number; y: number });
+    await page.waitForFunction(() => (globalThis as any).__sakuraGate?.scene.isActive() && (globalThis as any).__sakuraGate.children.list.some((o: any) => o.text?.includes('Попросили')));
+    assert.equal((await store.inbox(31, 10)).some((m) => m.kind === 'ask_key'), true);
+    assert.deepEqual(errors, []);
+    await page.context().close();
+  }
+
   console.log('offline, level 5: holes, blockers, portals, dark theme');
   {
     const { page, errors } = await open('?offline=1&level=5&seed=3', 'dark');

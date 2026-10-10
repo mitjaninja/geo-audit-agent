@@ -5,6 +5,8 @@ export interface TelegramUser {
   readonly firstName: string;
   readonly username?: string;
   readonly languageCode?: string;
+  /** Пользователь разрешил боту писать в личку (initData allows_write_to_pm) — для пушей. */
+  readonly allowsPm?: boolean;
 }
 
 export interface InitData {
@@ -57,6 +59,7 @@ export function validateInitData(raw: string, botToken: string, nowMs: number, m
       firstName: typeof u.first_name === 'string' ? u.first_name : '',
       ...(typeof u.username === 'string' ? { username: u.username } : {}),
       ...(typeof u.language_code === 'string' ? { languageCode: u.language_code } : {}),
+      ...(typeof u.allows_write_to_pm === 'boolean' ? { allowsPm: u.allows_write_to_pm } : {}),
     },
     authDate,
     ...(startParam ? { startParam } : {}),

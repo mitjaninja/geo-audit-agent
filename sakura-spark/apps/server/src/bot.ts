@@ -32,6 +32,7 @@ export const BOT_TEXT = {
     { command: 'start', description: 'Играть' },
     { command: 'paysupport', description: 'Помощь с покупками' },
     { command: 'terms', description: 'Условия' },
+    { command: 'notify', description: 'Уведомления вкл/выкл' },
   ],
   paysupport:
     'Помощь с покупками 🌸\n\nЕсли покупка не зачислилась или что-то пошло не так — напиши сюда, что случилось, '

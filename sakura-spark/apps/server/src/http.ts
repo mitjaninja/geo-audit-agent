@@ -67,15 +67,15 @@ export function createApp(deps: HttpDeps): Server {
   const log = deps.log ?? (() => {});
 
   /** «Authorization: tma <initData>» — подпись Telegram; «dev <id>» — только при DEV_AUTH. */
-  function authenticate(req: IncomingMessage): TelegramUser {
+  function authenticate(req: IncomingMessage): { user: TelegramUser; startParam?: string } {
     const header = req.headers.authorization ?? '';
     const [scheme, ...rest] = header.split(' ');
     const value = rest.join(' ');
     if (scheme === 'tma') {
       const data = validateInitData(value, deps.botToken, now());
-      if (data) return data.user;
+      if (data) return { user: data.user, ...(data.startParam ? { startParam: data.startParam } : {}) };
     } else if (scheme === 'dev' && deps.devAuth && /^\d{1,12}$/.test(value)) {
-      return { id: Number(value), firstName: `Dev ${value}` };
+      return { user: { id: Number(value), firstName: `Dev ${value}` } };
     }
     throw new HttpError(401, 'unauthorized');
   }
@@ -93,7 +93,8 @@ export function createApp(deps: HttpDeps): Server {
       return send(res, 200, { ok: true });
     }
 
-    const user = await deps.service.login(authenticate(req));
+    const auth = authenticate(req);
+    const user = await deps.service.login(auth.user, auth.startParam ? { startParam: auth.startParam } : {});
     if (method === 'GET' && path === '/api/me') return send(res, 200, await deps.service.me(user));
     if (method === 'GET' && path === '/api/levels') return send(res, 200, { levels: deps.service.levelSummaries() });
     if (method === 'POST' && path === '/api/attempts') {
@@ -101,6 +102,20 @@ export function createApp(deps: HttpDeps): Server {
       if (!Number.isInteger(levelId)) throw new HttpError(400, 'bad_request');
       return send(res, 200, await deps.service.startAttempt(user.id, levelId as number, Array.isArray(boosters) ? boosters : []));
     }
+    // соц: друзья, почта, ворота района, рейтинг уровня среди друзей
+    if (method === 'GET' && path === '/api/friends') {
+      return send(res, 200, { ...(await deps.service.friendsView(user.id)), inviteLink: deps.bot ? deps.bot.chat.link(`fr${user.id}`) : null });
+    }
+    if (method === 'POST' && path === '/api/friends/ask') return send(res, 200, await deps.service.askLives(user.id));
+    const lifeTo = /^\/api\/friends\/(\d{1,15})\/life$/.exec(path);
+    if (method === 'POST' && lifeTo) return send(res, 200, await deps.service.sendLife(user.id, Number(lifeTo[1])));
+    const mail = /^\/api\/mail\/(\d{1,15})$/.exec(path);
+    if (method === 'POST' && mail) return send(res, 200, await deps.service.mailAction(user.id, Number(mail[1])));
+    const levelFriends = /^\/api\/levels\/(\d{1,5})\/friends$/.exec(path);
+    if (method === 'GET' && levelFriends) return send(res, 200, { top: await deps.service.levelFriends(user.id, Number(levelFriends[1])) });
+    if (method === 'GET' && path === '/api/gate') return send(res, 200, { gate: await deps.service.gate(user.id) });
+    if (method === 'POST' && path === '/api/gate/ask') return send(res, 200, await deps.service.askKeys(user.id));
+    if (method === 'POST' && path === '/api/gate/buy') return send(res, 200, await deps.service.buyGate(user.id));
     if (path.startsWith('/api/meta')) {
       if (method === 'GET' && path === '/api/meta') return send(res, 200, await deps.service.metaView(user.id));
       if (method === 'POST' && path === '/api/meta/login') return send(res, 200, await deps.service.claimLogin(user.id));

@@ -85,6 +85,7 @@ export class ChatBot {
   }
 
   /** Ссылка «Играть» для карточки в чате. */
+  /** Ссылка в игру: комната, приглашение (fr<id>) или просто игра. */
   link(roomId?: string): string {
     const payload = roomId ?? 'play';
     return `https://t.me/${this.deps.botUsername}?${this.deps.directLinks ? 'startapp' : 'start'}=${payload}`;
@@ -155,6 +156,21 @@ export class ChatBot {
       if (!/message is not modified/.test(String(e))) throw e;
     }
     return true;
+  }
+
+  /** Пуш в личку с кнопкой игры. Бот заблокирован — больше не пишем. */
+  async push(userId: number, text: string): Promise<boolean> {
+    try {
+      await this.deps.api.call('sendMessage', {
+        chat_id: userId, text: `${text}\n\nВыключить уведомления: /notify off`,
+        reply_markup: { inline_keyboard: [[{ text: BOT_TEXT.play, web_app: { url: this.deps.webAppUrl } }]] },
+      });
+      return true;
+    } catch (e) {
+      if (/403|blocked|deactivated|chat not found/i.test(String(e))) await this.deps.service.pushBlocked(userId);
+      this.log(`push to ${userId} failed: ${String(e)}`);
+      return false;
+    }
   }
 
   async handleUpdate(raw: unknown): Promise<void> {
@@ -259,6 +275,15 @@ export class ChatBot {
     }
     const conf = /^\/(config|config_set|config_rollback)(?:@\w+)?(?:\s+([\s\S]*))?$/.exec(msg.text);
     if (conf) return this.onConfig(msg.chat.id, msg.from?.id, conf[1]!, conf[2] ?? '');
+    const notify = /^\/notify(?:@\w+)?(?:\s+(on|off))?$/.exec(msg.text);
+    if (notify && msg.from) {
+      const on = notify[1] !== 'off';
+      await this.deps.service.login(toUser(msg.from));
+      await this.deps.service.setNotify(msg.from.id, on);
+      return void (await this.deps.api.call('sendMessage', {
+        chat_id: msg.chat.id, text: on ? 'Уведомления включены (не больше двух в день). Выключить: /notify off' : 'Уведомления выключены. Включить: /notify on',
+      }));
+    }
     if (/^\/myid(?:@\w+)?$/.test(msg.text)) {
       return void (await this.deps.api.call('sendMessage', { chat_id: msg.chat.id, text: `Твой Telegram id: ${msg.from?.id ?? '—'}` }));
     }
@@ -268,6 +293,8 @@ export class ChatBot {
     const m = /^\/start(?:@\w+)?(?:\s+(\S+))?/.exec(msg.text);
     if (!m) return;
     const payload = m[1];
+    // приглашение друга: fr<id> — новичок запоминает, кто позвал
+    if (payload?.startsWith('fr') && msg.from) await this.deps.service.login(toUser(msg.from), { startParam: payload });
     const room = payload?.startsWith('r') ? await this.deps.service.getRoom(payload) : null;
     if (room && room.mode === 'challenge') {
       const url = `${this.deps.webAppUrl}?room=${encodeURIComponent(room.id)}`;

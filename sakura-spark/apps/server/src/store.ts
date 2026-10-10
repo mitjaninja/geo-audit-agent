@@ -15,6 +15,29 @@ export interface UserRow {
   readonly lives: LivesState;
   /** Наибольший открытый уровень. */
   readonly maxLevel: number;
+  /** Боту можно писать в личку (пуши); игрок не отключил уведомления. */
+  readonly allowsPm: boolean;
+  readonly notify: boolean;
+  /** Кто пригласил (реферальная ссылка). */
+  readonly referrerId: number | null;
+}
+
+export type MailKind = 'life' | 'ask_life' | 'ask_key';
+
+export interface MailRow {
+  readonly id: number;
+  readonly fromId: number;
+  readonly fromName: string;
+  readonly toId: number;
+  readonly kind: MailKind;
+  readonly episode: number | null;
+  readonly createdAt: number;
+}
+
+export interface FriendRow {
+  readonly id: number;
+  readonly firstName: string;
+  readonly maxLevel: number;
 }
 
 export interface LevelProgress {
@@ -225,6 +248,22 @@ export interface Store {
   closeAttempt(id: string, userId: number, c: AttemptClose): Promise<boolean>;
   addEvents(events: readonly EventRow[]): Promise<void>;
   getEvents(userId: number): Promise<EventRow[]>;
+  addFriends(a: number, b: number, source: string, now: number): Promise<boolean>;
+  areFriends(a: number, b: number): Promise<boolean>;
+  getFriends(userId: number, limit: number): Promise<FriendRow[]>;
+  levelScores(userId: number, levelId: number): Promise<{ id: number; firstName: string; score: number; stars: number }[]>;
+  addMail(m: { fromId: number; toId: number; kind: MailKind; episode: number | null; day: number; now: number }): Promise<number>;
+  sentMail(fromId: number, day: number, kind: MailKind): Promise<number[]>;
+  inbox(userId: number, limit: number): Promise<MailRow[]>;
+  getMail(id: number): Promise<(MailRow & { status: string }) | null>;
+  closeMail(id: number, status: string, userId: number, fn: (w: Wallet) => WalletUpdate | null): Promise<Wallet | null>;
+  setReferrer(userId: number, referrerId: number): Promise<boolean>;
+  markReferralRewarded(userId: number): Promise<boolean>;
+  setNotify(userId: number, on: boolean): Promise<void>;
+  setAllowsPm(userId: number, on: boolean): Promise<void>;
+  reservePush(userId: number, day: number, limit: number): Promise<boolean>;
+  livesRefilled(now: number, regenMs: number, max: number): Promise<{ id: number; fullAt: number }[]>;
+  setLivesPushAt(userId: number, at: number): Promise<void>;
   /** Remote config: последняя запись — действующая, остальные — история для отката. */
   getConfig(): Promise<ConfigRow | null>;
   saveConfig(json: string, now: number, authorId: number | null): Promise<ConfigRow>;
@@ -345,6 +384,24 @@ const MIGRATIONS: readonly string[] = [
   ALTER TABLE attempts ADD COLUMN time_limit INTEGER;`,
   // v5: мета — задания, календарь входа, колесо, сундуки эпизодов, карточки
   `ALTER TABLE users ADD COLUMN meta TEXT NOT NULL DEFAULT '{}';`,
+  // v6: соц — друзья, почта (подарки и просьбы), рефералы, пуши
+  `ALTER TABLE users ADD COLUMN allows_pm INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE users ADD COLUMN notify INTEGER NOT NULL DEFAULT 1;
+  ALTER TABLE users ADD COLUMN referrer_id INTEGER;
+  ALTER TABLE users ADD COLUMN ref_rewarded INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE users ADD COLUMN push_day INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE users ADD COLUMN push_count INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE users ADD COLUMN lives_push_at INTEGER NOT NULL DEFAULT 0;
+  CREATE TABLE friends (
+    user_id INTEGER NOT NULL, friend_id INTEGER NOT NULL, source TEXT NOT NULL, created_at INTEGER NOT NULL,
+    PRIMARY KEY (user_id, friend_id)
+  );
+  CREATE TABLE mail (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, from_id INTEGER NOT NULL, to_id INTEGER NOT NULL, kind TEXT NOT NULL,
+    episode INTEGER, day INTEGER NOT NULL, created_at INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'new'
+  );
+  CREATE INDEX mail_to ON mail (to_id, status);
+  CREATE INDEX mail_from_day ON mail (from_id, day, kind);`,
 ];
 
 /** Версия схемы после всех миграций. */
@@ -360,6 +417,9 @@ const toUser = (r: Row): UserRow => ({
   createdAt: Number(r.created_at),
   lives: { lives: Number(r.lives), updatedAt: Number(r.lives_updated_at), infiniteUntil: Number(r.infinite_until) },
   maxLevel: Number(r.max_level),
+  allowsPm: Number(r.allows_pm ?? 0) === 1,
+  notify: Number(r.notify ?? 1) === 1,
+  referrerId: r.referrer_id === null || r.referrer_id === undefined ? null : Number(r.referrer_id),
 });
 
 const toProgress = (r: Row): LevelProgress => ({
@@ -454,6 +514,7 @@ export class SqliteStore implements Store {
         language_code = excluded.language_code
     `).run(u.id, u.firstName, u.username ?? null, u.languageCode ?? null, now,
       initialLives.lives, initialLives.updatedAt, initialLives.infiniteUntil);
+    if (u.allowsPm !== undefined) this.db.prepare('UPDATE users SET allows_pm = ? WHERE id = ?').run(u.allowsPm ? 1 : 0, u.id);
     return (await this.getUser(u.id))!;
   }
 
@@ -720,6 +781,113 @@ export class SqliteStore implements Store {
       userId: Number(r.user_id), name: String(r.name), ts: Number(r.ts),
       levelId: r.level_id === null ? null : Number(r.level_id), props: JSON.parse(String(r.props)) as Record<string, unknown>,
     }));
+  }
+
+  // ---------- соц ----------
+
+  async addFriends(a: number, b: number, source: string, now: number): Promise<boolean> {
+    if (a === b) return false;
+    return this.tx(() => {
+      const ins = this.db.prepare('INSERT OR IGNORE INTO friends (user_id, friend_id, source, created_at) VALUES (?, ?, ?, ?)');
+      const n = Number(ins.run(a, b, source, now).changes);
+      ins.run(b, a, source, now);
+      return n > 0;
+    });
+  }
+
+  async areFriends(a: number, b: number): Promise<boolean> {
+    return this.db.prepare('SELECT 1 FROM friends WHERE user_id = ? AND friend_id = ?').get(a, b) !== undefined;
+  }
+
+  async getFriends(userId: number, limit: number): Promise<FriendRow[]> {
+    return (this.db.prepare(`SELECT u.id, u.first_name, u.max_level FROM friends f JOIN users u ON u.id = f.friend_id
+      WHERE f.user_id = ? ORDER BY u.max_level DESC, u.id LIMIT ?`).all(userId, limit) as Row[])
+      .map((r) => ({ id: Number(r.id), firstName: String(r.first_name), maxLevel: Number(r.max_level) }));
+  }
+
+  /** Лучшие результаты друзей и самого игрока на уровне. */
+  async levelScores(userId: number, levelId: number): Promise<{ id: number; firstName: string; score: number; stars: number }[]> {
+    return (this.db.prepare(`SELECT u.id, u.first_name, p.best_score, p.stars FROM level_progress p JOIN users u ON u.id = p.user_id
+      WHERE p.level_id = ? AND p.wins > 0 AND (p.user_id = ? OR p.user_id IN (SELECT friend_id FROM friends WHERE user_id = ?))
+      ORDER BY p.best_score DESC LIMIT 50`).all(levelId, userId, userId) as Row[])
+      .map((r) => ({ id: Number(r.id), firstName: String(r.first_name), score: Number(r.best_score), stars: Number(r.stars) }));
+  }
+
+  async addMail(m: { fromId: number; toId: number; kind: MailKind; episode: number | null; day: number; now: number }): Promise<number> {
+    const r = this.db.prepare('INSERT INTO mail (from_id, to_id, kind, episode, day, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(m.fromId, m.toId, m.kind, m.episode, m.day, m.now);
+    return Number(r.lastInsertRowid);
+  }
+
+  /** Сколько писем вида kind игрок отправил за день (и кому — для «одна жизнь другу в день»). */
+  async sentMail(fromId: number, day: number, kind: MailKind): Promise<number[]> {
+    return (this.db.prepare('SELECT to_id FROM mail WHERE from_id = ? AND day = ? AND kind = ?').all(fromId, day, kind) as Row[]).map((r) => Number(r.to_id));
+  }
+
+  async inbox(userId: number, limit: number): Promise<MailRow[]> {
+    return (this.db.prepare(`SELECT m.*, u.first_name FROM mail m JOIN users u ON u.id = m.from_id
+      WHERE m.to_id = ? AND m.status = 'new' ORDER BY m.id DESC LIMIT ?`).all(userId, limit) as Row[]).map((r) => ({
+      id: Number(r.id), fromId: Number(r.from_id), fromName: String(r.first_name), toId: Number(r.to_id), kind: r.kind as MailKind,
+      episode: r.episode === null ? null : Number(r.episode), createdAt: Number(r.created_at),
+    }));
+  }
+
+  async getMail(id: number): Promise<(MailRow & { status: string }) | null> {
+    const r = this.db.prepare('SELECT m.*, u.first_name FROM mail m JOIN users u ON u.id = m.from_id WHERE m.id = ?').get(id) as Row | undefined;
+    return r ? {
+      id: Number(r.id), fromId: Number(r.from_id), fromName: String(r.first_name), toId: Number(r.to_id), kind: r.kind as MailKind,
+      episode: r.episode === null ? null : Number(r.episode), createdAt: Number(r.created_at), status: String(r.status),
+    } : null;
+  }
+
+  /**
+   * Закрыть письмо (только новое) и в той же транзакции изменить кошелёк userId функцией fn.
+   * fn вернула null — письмо остаётся новым. false — письмо уже закрыто или fn отказала.
+   */
+  async closeMail(id: number, status: string, userId: number, fn: (w: Wallet) => WalletUpdate | null): Promise<Wallet | null> {
+    return this.tx(() => {
+      const m = this.db.prepare("SELECT status FROM mail WHERE id = ?").get(id) as Row | undefined;
+      if (!m || m.status !== 'new') return null;
+      const u = fn(this.readWallet(userId));
+      if (!u) return null;
+      this.db.prepare('UPDATE mail SET status = ? WHERE id = ?').run(status, id);
+      this.writeWallet(userId, u);
+      return this.readWallet(userId);
+    });
+  }
+
+  async setReferrer(userId: number, referrerId: number): Promise<boolean> {
+    return Number(this.db.prepare('UPDATE users SET referrer_id = ? WHERE id = ? AND referrer_id IS NULL').run(referrerId, userId).changes) > 0;
+  }
+
+  /** Отметить, что награда за приглашённого выдана: true — ровно один раз. */
+  async markReferralRewarded(userId: number): Promise<boolean> {
+    return Number(this.db.prepare('UPDATE users SET ref_rewarded = 1 WHERE id = ? AND ref_rewarded = 0').run(userId).changes) > 0;
+  }
+
+  async setNotify(userId: number, on: boolean): Promise<void> {
+    this.db.prepare('UPDATE users SET notify = ? WHERE id = ?').run(on ? 1 : 0, userId);
+  }
+
+  async setAllowsPm(userId: number, on: boolean): Promise<void> {
+    this.db.prepare('UPDATE users SET allows_pm = ? WHERE id = ?').run(on ? 1 : 0, userId);
+  }
+
+  /** Занять место под пуш: не больше limit в день, только если можно писать и уведомления не выключены. */
+  async reservePush(userId: number, day: number, limit: number): Promise<boolean> {
+    return Number(this.db.prepare(`UPDATE users SET push_count = CASE WHEN push_day = ? THEN push_count + 1 ELSE 1 END, push_day = ?
+      WHERE id = ? AND allows_pm = 1 AND notify = 1 AND (push_day != ? OR push_count < ?)`).run(day, day, userId, day, limit).changes) > 0;
+  }
+
+  /** Игроки, у которых кончились жизни и они восстановились к now, а пуша о них ещё не было. */
+  async livesRefilled(now: number, regenMs: number, max: number): Promise<{ id: number; fullAt: number }[]> {
+    return (this.db.prepare(`SELECT id, lives_updated_at + ? * ? AS full_at FROM users
+      WHERE lives = 0 AND allows_pm = 1 AND notify = 1 AND lives_updated_at + ? * ? <= ? AND lives_push_at < lives_updated_at + ? * ?
+      LIMIT 200`).all(max, regenMs, max, regenMs, now, max, regenMs) as Row[]).map((r) => ({ id: Number(r.id), fullAt: Number(r.full_at) }));
+  }
+
+  async setLivesPushAt(userId: number, at: number): Promise<void> {
+    this.db.prepare('UPDATE users SET lives_push_at = ? WHERE id = ?').run(at, userId);
   }
 
   async getConfig(): Promise<ConfigRow | null> {

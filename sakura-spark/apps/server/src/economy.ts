@@ -30,6 +30,11 @@ export interface Economy {
   readonly piggy: { readonly perWin: number; readonly max: number; readonly stars: number; readonly minToBreak: number };
   /** Мета: смена игрового дня (часовой пояс), доп. спины колеса, помощь застрявшему. */
   readonly meta: { readonly dayOffsetHours: number; readonly wheelSpinPrice: number; readonly wheelExtraSpins: number; readonly stuckDays: number };
+  /** Соц: подарки жизней в день, ключи района, реферальная награда, пуши в день. */
+  readonly social: {
+    readonly giftsPerDay: number; readonly keysNeeded: number; readonly gateWaitHours: number; readonly gatePrice: number;
+    readonly referralCrystals: number; readonly referralLevel: number; readonly pushesPerDay: number;
+  };
 }
 
 export const DEFAULT_ECONOMY: Economy = {
@@ -51,6 +56,7 @@ export const DEFAULT_ECONOMY: Economy = {
   },
   piggy: { perWin: 3, max: 120, stars: 150, minToBreak: 30 },
   meta: { dayOffsetHours: 3, wheelSpinPrice: 9, wheelExtraSpins: 3, stuckDays: 3 },
+  social: { giftsPerDay: 5, keysNeeded: 3, gateWaitHours: 24, gatePrice: 29, referralCrystals: 20, referralLevel: 10, pushesPerDay: 2 },
 };
 
 /** Цена n-й докупки ходов в попытке (0 — первая); дальше последней ступени — последняя цена. */

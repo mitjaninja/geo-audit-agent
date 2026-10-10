@@ -2,7 +2,7 @@ import { randomBytes, randomInt, randomUUID } from 'node:crypto';
 import { assistForLossStreak, gameOptionsFromLevel, Match3Game } from '@sakura/core';
 import type { LevelDef, Move, Pos } from '@sakura/core';
 import type { TelegramUser } from './auth.ts';
-import { canPlay, fullLives, refund, spend, view } from './lives.ts';
+import { canPlay, fullLives, LIFE_REGEN_MS, MAX_LIVES, refund, regen, spend, view } from './lives.ts';
 import type { LivesView } from './lives.ts';
 import type { AttemptRow, LevelProgress, RoomMode, RoomRow, Store, UserRow, Wallet, WalletUpdate } from './store.ts';
 import { DEFAULT_ECONOMY, extendPrice, GAME_ITEMS, isItem, ITEMS, START_ITEMS } from './economy.ts';
@@ -71,7 +71,8 @@ export interface RoomView {
 export class ServiceError extends Error {
   constructor(
     readonly code: 'unknown_level' | 'level_locked' | 'no_lives' | 'not_found' | 'not_open' | 'invalid_replay' | 'bad_request'
-      | 'room_limit' | 'room_expired' | 'no_crystals' | 'no_items' | 'not_available' | 'already' | 'not_done' | 'limit',
+      | 'room_limit' | 'room_expired' | 'no_crystals' | 'no_items' | 'not_available' | 'already' | 'not_done' | 'limit'
+      | 'episode_locked' | 'not_friends' | 'lives_full',
     readonly status: number,
     readonly details: Record<string, unknown> = {},
   ) {
@@ -95,6 +96,8 @@ export interface MeResponse {
   readonly levels: Record<number, { readonly stars: number; readonly bestScore: number }>;
   readonly levelCount: number;
   readonly serverTime: number;
+  /** Закрытые ворота района, у которых стоит игрок. */
+  readonly gate: GateView | null;
   /** Ходы и время уровней, сдвинутые remote config. */
   readonly levelOverrides: Record<number, { readonly moves?: number; readonly timeLimit?: number }>;
 }
@@ -115,6 +118,8 @@ export interface StartResponse {
 }
 
 export interface FinishResponse {
+  /** Победа привела к воротам нового района. */
+  readonly gate?: GateView;
   readonly result: 'won' | 'lost';
   readonly score: number;
   readonly stars: number;
@@ -140,6 +145,8 @@ export interface ServiceDeps {
   readonly log?: (msg: string) => void;
   /** Случайность колеса (в тестах — подменяется). */
   readonly random?: () => number;
+  /** Отправить пуш в личку от бота (лимит в день сервис уже проверил). false — не дошёл. */
+  readonly sendPush?: (userId: number, text: string) => Promise<boolean>;
 }
 
 const emptyProgress = (levelId: number): LevelProgress => ({ levelId, bestScore: 0, stars: 0, wins: 0, losses: 0, lossStreak: 0 });
@@ -159,6 +166,7 @@ export class GameService {
   readonly economy: Economy;
   private readonly log: (msg: string) => void;
   private readonly random: () => number;
+  private readonly sendPush: (userId: number, text: string) => Promise<boolean>;
   /** Действующий remote config (кеш; сервер один, правки идут через setConfig). */
   private config: RemoteConfig | null = null;
 
@@ -173,6 +181,7 @@ export class GameService {
     this.economy = deps.economy ?? DEFAULT_ECONOMY;
     this.log = deps.log ?? (() => {});
     this.random = deps.random ?? (() => randomInt(2 ** 32) / 2 ** 32);
+    this.sendPush = deps.sendPush ?? (async () => false);
   }
 
   // ---------- remote config ----------
@@ -252,7 +261,8 @@ export class GameService {
     return this.walletView(await this.store.getWallet(userId));
   }
 
-  async login(u: TelegramUser): Promise<UserRow> {
+  /** startParam — из initData (startapp) или /start бота: «fr<id>» — пришёл по приглашению друга. */
+  async login(u: TelegramUser, opts: { startParam?: string } = {}): Promise<UserRow> {
     const existed = await this.store.getUser(u.id);
     const user = await this.store.upsertUser(u, this.now(), fullLives(this.now()));
     if (!existed) {
@@ -260,8 +270,210 @@ export class GameService {
       const n = (await this.configFor(u.id)).economy.freeItemsOnInstall;
       await this.store.transact(u.id, () => ({ items: Object.fromEntries(ITEMS.map((i) => [i, n])) as Record<Item, number> }));
       await this.track(u.id, 'install', null, { language: u.languageCode ?? null });
+      const ref = /^fr(\d{1,15})$/.exec(opts.startParam ?? '');
+      if (ref) await this.referred(user, Number(ref[1]));
     }
     return user;
+  }
+
+  // ---------- соц: друзья, жизни, ключи районов, рефералы, пуши ----------
+
+  private async social(userId: number) {
+    return (await this.configFor(userId)).economy.social;
+  }
+
+  private async today(userId: number): Promise<number> {
+    return dayNumber(this.now(), (await this.configFor(userId)).economy.meta.dayOffsetHours);
+  }
+
+  /** Пуш от бота: не больше pushesPerDay в день, только тем, кто разрешил писать и не выключил уведомления. */
+  async push(userId: number, text: string): Promise<boolean> {
+    const limit = (await this.social(userId)).pushesPerDay;
+    if (!(await this.store.reservePush(userId, await this.today(userId), limit))) return false;
+    const ok = await this.sendPush(userId, text).catch(() => false);
+    if (ok) await this.track(userId, 'push_sent', null, { text: text.slice(0, 60) });
+    return ok;
+  }
+
+  /** Бот не смог написать (игрок заблокировал бота) — больше не пытаемся. */
+  async pushBlocked(userId: number): Promise<void> {
+    await this.store.setAllowsPm(userId, false);
+  }
+
+  async setNotify(userId: number, on: boolean): Promise<void> {
+    await this.store.setNotify(userId, on);
+  }
+
+  private async referred(user: UserRow, referrerId: number): Promise<void> {
+    const referrer = await this.store.getUser(referrerId);
+    if (!referrer || referrerId === user.id || !(await this.store.setReferrer(user.id, referrerId))) return;
+    await this.store.addFriends(user.id, referrerId, 'ref', this.now());
+    await this.track(user.id, 'referral', null, { referrerId });
+    const s = await this.social(referrerId);
+    void this.push(referrerId, `${user.firstName || 'Друг'} пришёл по твоему приглашению! Когда дойдёт до уровня ${s.referralLevel} — получишь ${s.referralCrystals} 💎`);
+  }
+
+  /** Друзья — те, кто играл в одном челлендже, дарил жизнь в чате или пришёл по приглашению. */
+  async befriend(a: number, b: number, source: string): Promise<void> {
+    if (await this.store.addFriends(a, b, source, this.now())) await this.track(a, 'friend_added', null, { friendId: b, source });
+  }
+
+  async friendsView(userId: number) {
+    const s = await this.social(userId);
+    const day = await this.today(userId);
+    const sent = await this.store.sentMail(userId, day, 'life');
+    const asked = await this.store.sentMail(userId, day, 'ask_life');
+    const friends = await this.store.getFriends(userId, 100);
+    return {
+      friends: friends.map((f) => ({ id: f.id, name: f.firstName, maxLevel: f.maxLevel, sentToday: sent.includes(f.id) })),
+      giftsLeft: Math.max(0, s.giftsPerDay - sent.length),
+      askedToday: asked.length > 0,
+      inbox: (await this.store.inbox(userId, 30)).map((m) => ({ id: m.id, kind: m.kind, from: { id: m.fromId, name: m.fromName }, episode: m.episode, createdAt: m.createdAt })),
+    };
+  }
+
+  /** Подарить жизнь другу: до giftsPerDay в день, одному другу — одну. Дарителю жизнь не стоит. */
+  async sendLife(userId: number, friendId: unknown): Promise<{ giftsLeft: number }> {
+    if (!Number.isSafeInteger(friendId)) throw new ServiceError('bad_request', 400);
+    const to = friendId as number;
+    if (!(await this.store.areFriends(userId, to))) throw new ServiceError('not_friends', 403);
+    const s = await this.social(userId);
+    const day = await this.today(userId);
+    const sent = await this.store.sentMail(userId, day, 'life');
+    if (sent.includes(to)) throw new ServiceError('already', 409);
+    if (sent.length >= s.giftsPerDay) throw new ServiceError('limit', 429, { limit: s.giftsPerDay });
+    await this.store.addMail({ fromId: userId, toId: to, kind: 'life', episode: null, day, now: this.now() });
+    await this.track(userId, 'life_sent', null, { to });
+    const me = (await this.store.getUser(userId))!;
+    void this.push(to, `${me.firstName || 'Друг'} подарил тебе жизнь ❤`);
+    return { giftsLeft: s.giftsPerDay - sent.length - 1 };
+  }
+
+  /** Попросить жизнь у всех друзей — раз в день каждому. */
+  async askLives(userId: number): Promise<{ asked: number }> {
+    return this.askFriends(userId, 'ask_life', null, (name) => `${name} просит жизнь — подари в игре ❤`);
+  }
+
+  private async askFriends(userId: number, kind: 'ask_life' | 'ask_key', episode: number | null, text: (name: string) => string): Promise<{ asked: number }> {
+    const day = await this.today(userId);
+    const already = new Set(await this.store.sentMail(userId, day, kind));
+    const me = (await this.store.getUser(userId))!;
+    const friends = (await this.store.getFriends(userId, 100)).filter((f) => !already.has(f.id));
+    for (const f of friends) {
+      await this.store.addMail({ fromId: userId, toId: f.id, kind, episode, day, now: this.now() });
+      void this.push(f.id, text(me.firstName || 'Друг'));
+    }
+    if (friends.length > 0) await this.track(userId, kind, null, { friends: friends.length, episode });
+    return { asked: friends.length };
+  }
+
+  /** Письмо из «почты»: принять жизнь, подарить жизнь в ответ на просьбу, дать ключ района. */
+  async mailAction(userId: number, mailId: unknown): Promise<{ wallet: WalletView; lives: LivesView }> {
+    if (!Number.isSafeInteger(mailId)) throw new ServiceError('bad_request', 400);
+    const m = await this.store.getMail(mailId as number);
+    if (!m || m.toId !== userId) throw new ServiceError('not_found', 404);
+    if (m.status !== 'new') throw new ServiceError('already', 409);
+    const now = this.now();
+    let w: Wallet | null;
+    if (m.kind === 'life') {
+      let full = false;
+      w = await this.store.closeMail(m.id, 'accepted', userId, (x) => {
+        const l = regen(x.lives, now);
+        if (l.lives >= MAX_LIVES) {
+          full = true;
+          return null;
+        }
+        return { lives: { ...l, lives: l.lives + 1 } };
+      });
+      if (full) throw new ServiceError('lives_full', 409);
+    } else if (m.kind === 'ask_life') {
+      await this.sendLife(userId, m.fromId).catch((e) => {
+        if (!(e instanceof ServiceError && e.code === 'already')) throw e;
+      });
+      w = await this.store.closeMail(m.id, 'done', userId, () => ({}));
+    } else {
+      const s = await this.social(m.fromId);
+      await this.store.transact(m.fromId, (x) => {
+        const g = x.meta.gates?.[String(m.episode)];
+        if (!g || g.keys.includes(userId) || g.keys.length >= s.keysNeeded) return null;
+        return { meta: { ...x.meta, gates: { ...x.meta.gates, [String(m.episode)]: { ...g, keys: [...g.keys, userId] } } } };
+      });
+      w = await this.store.closeMail(m.id, 'done', userId, () => ({}));
+      await this.track(userId, 'key_given', null, { to: m.fromId, episode: m.episode });
+    }
+    if (!w) throw new ServiceError('already', 409);
+    return { wallet: this.walletView(w), lives: view(w.lives, now) };
+  }
+
+  /** Лучшие результаты друзей на уровне (PRD «Рейтинг уровня»). */
+  async levelFriends(userId: number, levelId: number) {
+    return (await this.store.levelScores(userId, levelId)).slice(0, 10)
+      .map((r, i) => ({ place: i + 1, name: r.firstName, score: r.score, stars: r.stars, me: r.id === userId }));
+  }
+
+  /**
+   * Ворота района: игрок дошёл до первого уровня нового района — нужно 3 ключа от друзей,
+   * или подождать 24 ч, или заплатить кристаллами. null — закрытых ворот нет.
+   */
+  private gateOf(user: UserRow, meta: MetaState, e: Economy, now: number): GateView | null {
+    const episode = episodeOf(user.maxLevel);
+    const first = (episode - 1) * LEVELS_PER_EPISODE + 1;
+    if (episode < 2 || user.maxLevel !== first || user.maxLevel > this.levels.size) return null;
+    const g = meta.gates?.[String(episode)];
+    // кто стоял у ворот до появления ключей — не запираем
+    if (!g) return null;
+    const unlockAt = g.reachedAt + e.social.gateWaitHours * 3600_000;
+    if (g.open || g.keys.length >= e.social.keysNeeded || now >= unlockAt) return null;
+    return { episode, levelId: first, keys: g.keys.length, needed: e.social.keysNeeded, unlockAt, price: e.social.gatePrice };
+  }
+
+  async gate(userId: number): Promise<GateView | null> {
+    const user = (await this.store.getUser(userId))!;
+    return this.gateOf(user, (await this.store.getWallet(userId)).meta, (await this.configFor(userId)).economy, this.now());
+  }
+
+  async askKeys(userId: number): Promise<{ asked: number }> {
+    const g = await this.gate(userId);
+    if (!g) throw new ServiceError('not_available', 409);
+    return this.askFriends(userId, 'ask_key', g.episode, (name) => `${name} просит ключ к новому району — помоги в игре 🔑`);
+  }
+
+  async buyGate(userId: number): Promise<{ wallet: WalletView }> {
+    const g = await this.gate(userId);
+    if (!g) throw new ServiceError('not_available', 409);
+    const w = await this.store.transact(userId, (x) => {
+      if (x.crystals < g.price) return null;
+      const cur = x.meta.gates![String(g.episode)]!;
+      return { crystals: x.crystals - g.price, meta: { ...x.meta, gates: { ...x.meta.gates, [String(g.episode)]: { ...cur, open: true } } } };
+    });
+    if (!w) throw new ServiceError('no_crystals', 402, { price: g.price });
+    await this.track(userId, 'gate_bought', null, { episode: g.episode, price: g.price });
+    return { wallet: this.walletView(w) };
+  }
+
+  /** Пуши «жизни восстановились» — тем, у кого они кончились. Вызывается по таймеру. */
+  async pushLivesRefilled(): Promise<number> {
+    let n = 0;
+    for (const u of await this.store.livesRefilled(this.now(), LIFE_REGEN_MS, MAX_LIVES)) {
+      await this.store.setLivesPushAt(u.id, u.fullAt);
+      if (await this.push(u.id, 'Жизни восстановились — Мика ждёт на карте! ❤ ×5')) n++;
+    }
+    return n;
+  }
+
+  /** После победы: награда пригласившему (уровень 10), «друг обогнал тебя» тем, кого обошёл. */
+  private async afterWin(user: UserRow, levelId: number, prevBest: number, score: number, newMaxLevel: number): Promise<void> {
+    const s = await this.social(user.id);
+    if (user.referrerId && user.maxLevel <= s.referralLevel && newMaxLevel > s.referralLevel && await this.store.markReferralRewarded(user.id)) {
+      const rs = await this.social(user.referrerId);
+      await this.store.transact(user.referrerId, (w) => ({ crystals: w.crystals + rs.referralCrystals }));
+      await this.track(user.referrerId, 'referral_reward', null, { friendId: user.id, crystals: rs.referralCrystals });
+      void this.push(user.referrerId, `${user.firstName || 'Друг'} дошёл до уровня ${rs.referralLevel} — тебе ${rs.referralCrystals} 💎!`);
+    }
+    if (score <= prevBest) return;
+    for (const f of await this.store.levelScores(user.id, levelId)) {
+      if (f.id !== user.id && f.score < score && f.score >= prevBest) void this.push(f.id, `${user.firstName || 'Друг'} обогнал тебя на уровне ${levelId}! Отыграешься?`);
+    }
   }
 
   private track(userId: number, name: string, levelId: number | null, props: Record<string, unknown> = {}): Promise<void> {
@@ -289,6 +501,7 @@ export class GameService {
     const eff = await this.configFor(user.id);
     return {
       levelOverrides: this.levelOverrides(eff),
+      gate: this.gateOf(user, (await this.store.getWallet(user.id)).meta, eff.economy, this.now()),
       user: { id: user.id, firstName: user.firstName },
       lives: view(user.lives, this.now()),
       wallet: await this.wallet(user.id),
@@ -310,6 +523,10 @@ export class GameService {
     if (!level) throw new ServiceError('unknown_level', 404);
     let user = (await this.store.getUser(userId))!;
     if (levelId > user.maxLevel) throw new ServiceError('level_locked', 403, { maxLevel: user.maxLevel });
+    if (levelId === user.maxLevel) {
+      const gate = this.gateOf(user, (await this.store.getWallet(userId)).meta, (await this.configFor(userId)).economy, this.now());
+      if (gate) throw new ServiceError('episode_locked', 403, { gate });
+    }
 
     // незаконченная попытка (закрыли приложение посреди уровня) засчитывается как поражение
     const open = await this.store.getOpenAttempt(userId);
@@ -407,16 +624,18 @@ export class GameService {
         piggy: Math.min(e.piggy.max, w.piggy + e.piggy.perWin),
         ...(crossed && !w.starterBought && w.starterUntil === 0 ? { starterUntil: now + e.starter.windowMs } : {}),
         // защита от выгорания считает дни с открытия последнего уровня
-        meta: maxLevel > user.maxLevel ? { ...meta, maxLevelAt: now } : meta,
+        meta: maxLevel > user.maxLevel ? { ...withGate(meta, maxLevel, now, this.levels.size), maxLevelAt: now } : meta,
       };
     });
     await this.track(userId, 'level_win', level.id, {
       attemptId: attempt.id, score: game.score, stars: game.stars, movesUsed: parsed.length,
       movesLeft: level.timeLimit === undefined ? game.movesLeft : null, assist: attempt.assist,
     });
+    await this.afterWin(user, level.id, prev.bestScore, game.score, maxLevel);
+    const gate = maxLevel > user.maxLevel ? await this.gate(userId) : null;
     return {
       result: 'won', score: game.score, stars: game.stars, bestScore: progress.bestScore, lives: view(lives, now), maxLevel,
-      wallet: await this.wallet(userId),
+      wallet: await this.wallet(userId), ...(gate ? { gate } : {}),
     };
   }
 
@@ -517,6 +736,8 @@ export class GameService {
       roomId: attempt.roomId, attemptId: attempt.id, score: game.score, stars: game.stars, won, movesLeft: game.movesLeft,
     });
     await this.bumpTasks(user.id, { room: 1, score: game.score });
+    const room = await this.store.getRoom(attempt.roomId!);
+    if (room && room.creatorId !== user.id) await this.befriend(user.id, room.creatorId, 'room');
     const results = await this.store.getRoomResults(attempt.roomId!);
     const place = results.findIndex((r) => r.userId === user.id) + 1;
     this.onRoomChanged(attempt.roomId!);
@@ -539,6 +760,7 @@ export class GameService {
     const gifts = (await this.store.getRoom(roomId))!.gifts;
     if (status === 'ok') {
       await this.track(giver.id, 'life_gift', null, { roomId, to: room.creatorId });
+      await this.befriend(giver.id, room.creatorId, 'gift');
       this.onRoomChanged(roomId);
     }
     return { status, gifts };
@@ -882,6 +1104,7 @@ export class GameService {
       packs: e.packs,
       starter: { stars: e.starter.stars, crystals: e.starter.crystals, items: e.starter.items, infiniteLivesMs: e.starter.infiniteLivesMs },
       piggy: { stars: e.piggy.stars, max: e.piggy.max, minToBreak: e.piggy.minToBreak },
+      social: { referralCrystals: e.social.referralCrystals, referralLevel: e.social.referralLevel, giftsPerDay: e.social.giftsPerDay },
     };
   }
 
@@ -934,6 +1157,22 @@ export function roomLevelPool(levels: ReadonlyMap<number, LevelDef>, creatorMaxL
 }
 
 const MAX_LIVES_VIEW = 5;
+
+export interface GateView {
+  readonly episode: number;
+  readonly levelId: number;
+  readonly keys: number;
+  readonly needed: number;
+  readonly unlockAt: number;
+  readonly price: number;
+}
+
+/** Победа открыла первый уровень нового района — запомнить, когда игрок подошёл к воротам. */
+function withGate(meta: MetaState, maxLevel: number, now: number, levelCount: number): MetaState {
+  const episode = episodeOf(maxLevel);
+  if (episode < 2 || maxLevel !== (episode - 1) * LEVELS_PER_EPISODE + 1 || maxLevel > levelCount || meta.gates?.[String(episode)]) return meta;
+  return { ...meta, gates: { ...meta.gates, [String(episode)]: { reachedAt: now, keys: [] } } };
+}
 const STUCK_REWARD: Reward = { items: { hammer: 1, beamBomb: 1 } };
 
 export interface MetaView {
