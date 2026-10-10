@@ -6,3 +6,6 @@ export { autotestLevel, formatReports, goalFraction, playOnce, SECONDS_PER_MOVE,
 export type { AutotestOptions, LevelReport, Verdict } from './autotest.ts';
 export { targetBand } from './targets.ts';
 export type { WinRateBand } from './targets.ts';
+export type { PlayerModel } from './autotest.ts';
+export { calibrate, DEFAULT_PACES, DEFAULT_SKILLS } from './calibrate.ts';
+export type { Calibration, CalibrationRow, RealLevelStats } from './calibrate.ts';

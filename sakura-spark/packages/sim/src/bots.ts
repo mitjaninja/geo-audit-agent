@@ -74,8 +74,8 @@ export function casualBot(seed: number, skill = CASUAL_SKILL): Bot {
   return (game) => (rng.next() < skill ? greedy(game) : random(game));
 }
 
-export function makeBot(name: BotName, seed: number): Bot {
+export function makeBot(name: BotName, seed: number, skill = CASUAL_SKILL): Bot {
   if (name === 'greedy') return greedyBot(seed);
-  if (name === 'casual') return casualBot(seed);
+  if (name === 'casual') return casualBot(seed, skill);
   return randomBot(seed);
 }

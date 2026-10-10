@@ -7,6 +7,8 @@ import type { LivesView } from './lives.ts';
 import type { AttemptRow, LevelProgress, RoomMode, RoomRow, Store, UserRow, Wallet, WalletUpdate } from './store.ts';
 import { DEFAULT_ECONOMY, extendPrice, GAME_ITEMS, isItem, ITEMS, START_ITEMS } from './economy.ts';
 import type { Economy, Item, ProductId } from './economy.ts';
+import { ConfigError, levelForAttempt, lossStreakForAssist, parseRemoteConfig, resolveConfig, tweakLevel } from './remote.ts';
+import type { Effective, RemoteConfig } from './remote.ts';
 
 /** События, которые может прислать клиент. Игровые итоги пишет только сервер — по реплею. */
 export const CLIENT_EVENTS: ReadonlySet<string> = new Set([
@@ -88,6 +90,8 @@ export interface MeResponse {
   readonly levels: Record<number, { readonly stars: number; readonly bestScore: number }>;
   readonly levelCount: number;
   readonly serverTime: number;
+  /** Ходы и время уровней, сдвинутые remote config. */
+  readonly levelOverrides: Record<number, { readonly moves?: number; readonly timeLimit?: number }>;
 }
 
 export interface StartResponse {
@@ -126,7 +130,9 @@ export interface ServiceDeps {
   readonly newRoomId?: () => string;
   /** Рейтинг или подарки комнаты изменились — бот обновит карточку в чате. */
   readonly onRoomChanged?: (roomId: string) => void;
+  /** Базовая экономика; remote config накладывается поверх. */
   readonly economy?: Economy;
+  readonly log?: (msg: string) => void;
 }
 
 const emptyProgress = (levelId: number): LevelProgress => ({ levelId, bestScore: 0, stars: 0, wins: 0, losses: 0, lossStreak: 0 });
@@ -144,6 +150,9 @@ export class GameService {
   private readonly newRoomId: () => string;
   private readonly onRoomChanged: (roomId: string) => void;
   readonly economy: Economy;
+  private readonly log: (msg: string) => void;
+  /** Действующий remote config (кеш; сервер один, правки идут через setConfig). */
+  private config: RemoteConfig | null = null;
 
   constructor(deps: ServiceDeps) {
     this.store = deps.store;
@@ -154,6 +163,72 @@ export class GameService {
     this.newRoomId = deps.newRoomId ?? newRoomId;
     this.onRoomChanged = deps.onRoomChanged ?? (() => {});
     this.economy = deps.economy ?? DEFAULT_ECONOMY;
+    this.log = deps.log ?? (() => {});
+  }
+
+  // ---------- remote config ----------
+
+  private levelIds(): Set<number> {
+    return new Set(this.levels.keys());
+  }
+
+  async remoteConfig(): Promise<RemoteConfig> {
+    if (this.config) return this.config;
+    const row = await this.store.getConfig();
+    try {
+      this.config = row ? parseRemoteConfig(JSON.parse(row.json), this.levelIds()) : {};
+    } catch (e) {
+      // например, из игры убрали уровень, а сдвиг для него остался — работаем на базовых значениях
+      this.log(`remote config #${row?.id} ignored: ${(e as Error).message}`);
+      this.config = {};
+    }
+    return this.config;
+  }
+
+  /** Конфиг для игрока: экономика, сдвиги уровней, порог облегчения, варианты экспериментов. */
+  async configFor(userId: number): Promise<Effective> {
+    return resolveConfig(await this.remoteConfig(), userId, this.economy);
+  }
+
+  /** Заменить конфиг целиком (команда администратора). Ошибка разбора — ConfigError с путём к полю. */
+  async setConfig(json: string, authorId: number | null): Promise<{ id: number; config: RemoteConfig }> {
+    let raw: unknown;
+    try {
+      raw = JSON.parse(json);
+    } catch {
+      throw new ConfigError('это не JSON');
+    }
+    const config = parseRemoteConfig(raw, this.levelIds());
+    const row = await this.store.saveConfig(JSON.stringify(config), this.now(), authorId);
+    this.config = config;
+    return { id: row.id, config };
+  }
+
+  /** Вернуть предыдущую версию конфига (новой записью — история не теряется). */
+  async rollbackConfig(authorId: number | null): Promise<{ id: number; from: number } | null> {
+    const [, prev] = await this.store.configHistory(2);
+    if (!prev) return null;
+    const row = await this.store.saveConfig(prev.json, this.now(), authorId);
+    this.config = null;
+    await this.remoteConfig();
+    return { id: row.id, from: prev.id };
+  }
+
+  async configHistory(limit = 5) {
+    return this.store.configHistory(limit);
+  }
+
+  /** Сдвиги ходов и времени для карты и экрана старта — клиент показывает то, что будет в партии. */
+  private levelOverrides(eff: Effective): Record<number, { moves?: number; timeLimit?: number }> {
+    const out: Record<number, { moves?: number; timeLimit?: number }> = {};
+    for (const id of Object.keys(eff.levels)) {
+      const level = this.levels.get(Number(id));
+      if (!level) continue;
+      const t = tweakLevel(level, eff.levels[id]);
+      if (t.moves === null && t.timeLimit === null) continue;
+      out[level.id] = { ...(t.moves !== null ? { moves: t.moves } : {}), ...(t.timeLimit !== null ? { timeLimit: t.timeLimit } : {}) };
+    }
+    return out;
   }
 
   private walletView(w: Wallet): WalletView {
@@ -173,7 +248,7 @@ export class GameService {
     const user = await this.store.upsertUser(u, this.now(), fullLives(this.now()));
     if (!existed) {
       // PRD: бесплатные бустеры на старте — приучают ими пользоваться
-      const n = this.economy.freeItemsOnInstall;
+      const n = (await this.configFor(u.id)).economy.freeItemsOnInstall;
       await this.store.transact(u.id, () => ({ items: Object.fromEntries(ITEMS.map((i) => [i, n])) as Record<Item, number> }));
       await this.track(u.id, 'install', null, { language: u.languageCode ?? null });
     }
@@ -202,7 +277,9 @@ export class GameService {
 
   async me(user: UserRow): Promise<MeResponse> {
     const progress = await this.store.getProgress(user.id);
+    const eff = await this.configFor(user.id);
     return {
+      levelOverrides: this.levelOverrides(eff),
       user: { id: user.id, firstName: user.firstName },
       lives: view(user.lives, this.now()),
       wallet: await this.wallet(user.id),
@@ -239,17 +316,23 @@ export class GameService {
     }
 
     const progress = (await this.store.getLevelProgress(userId, levelId)) ?? emptyProgress(levelId);
+    const eff = await this.configFor(userId);
     await this.takeStartBoosters(userId, startBoosters);
     const lives = spend(user.lives, now);
+    const tweak = tweakLevel(level, eff.levels[String(levelId)]);
     const attempt = {
       id: this.newId(), userId, levelId, seed: this.newSeed(),
-      // PRD: после 5+ поражений подряд — скрытое облегчение
-      assist: assistForLossStreak(progress.lossStreak), startedAt: now, roomId: null, startBoosters,
+      // PRD: после 5+ поражений подряд (порог — из конфига) — скрытое облегчение
+      assist: assistForLossStreak(lossStreakForAssist(progress.lossStreak, eff.assistAfterLosses)), startedAt: now, roomId: null, startBoosters,
+      moves: tweak.moves, timeLimit: tweak.timeLimit,
     };
     await this.store.createAttempt(attempt, lives);
-    await this.track(userId, 'level_start', levelId, { attemptId: attempt.id, assist: attempt.assist, boosters: startBoosters });
+    await this.track(userId, 'level_start', levelId, {
+      attemptId: attempt.id, assist: attempt.assist, boosters: startBoosters, ...expProps(eff),
+      ...(tweak.moves !== null ? { moves: tweak.moves } : {}), ...(tweak.timeLimit !== null ? { timeLimit: tweak.timeLimit } : {}),
+    });
     return {
-      attemptId: attempt.id, seed: attempt.seed, level, lives: view(lives, now), wallet: await this.wallet(userId),
+      attemptId: attempt.id, seed: attempt.seed, level: levelForAttempt(level, attempt), lives: view(lives, now), wallet: await this.wallet(userId),
       assist: attempt.assist, startBoosters,
     };
   }
@@ -267,7 +350,7 @@ export class GameService {
       await this.closeAsLoss(attempt, 'rejected', [], false);
       throw new ServiceError('invalid_replay', 400);
     }
-    const level = this.levels.get(attempt.levelId)!;
+    const level = levelForAttempt(this.levels.get(attempt.levelId)!, attempt);
     let game: Match3Game;
     try {
       game = Match3Game.replay(this.optionsFor(attempt, level), parsed);
@@ -306,7 +389,7 @@ export class GameService {
     });
     if (!closed) throw new ServiceError('not_open', 409);
     // копилка растёт за победы; стартовый пак открывается один раз, когда игрок прошёл уровень 15
-    const e = this.economy;
+    const e = (await this.configFor(userId)).economy;
     const crossed = user.maxLevel <= e.starter.afterLevel && maxLevel > e.starter.afterLevel;
     await this.store.transact(userId, (w) => ({
       piggy: Math.min(e.piggy.max, w.piggy + e.piggy.perWin),
@@ -386,7 +469,9 @@ export class GameService {
     await this.takeStartBoosters(userId, startBoosters);
     const lives = free ? user.lives : spend(user.lives, now);
     // облегчение в комнате не даём: у всех должно быть одинаковое выпадение фишек
-    const attempt = { id: this.newId(), userId, levelId: room.levelId, seed: room.seed, assist: 0, startedAt: now, roomId, startBoosters };
+    const attempt = {
+      id: this.newId(), userId, levelId: room.levelId, seed: room.seed, assist: 0, startedAt: now, roomId, startBoosters, moves: null, timeLimit: null,
+    };
     await this.store.createAttempt(attempt, lives);
     await this.track(userId, 'room_start', room.levelId, { roomId, attemptId: attempt.id, free });
     return {
@@ -470,7 +555,8 @@ export class GameService {
    */
   private async settleSpending(attempt: AttemptRow, game: Match3Game): Promise<string | null> {
     const extras = game.history.filter((m) => 'extraMoves' in m) as { extraMoves: number }[];
-    if (extras.length > attempt.extensions || extras.some((m) => m.extraMoves !== this.economy.extendMoves)) return 'unpaid_moves';
+    const { extendMoves } = (await this.configFor(attempt.userId)).economy;
+    if (extras.length > attempt.extensions || extras.some((m) => m.extraMoves !== extendMoves)) return 'unpaid_moves';
     const used = game.boostersUsed();
     const spent = (Object.entries(used) as [Item, number][]).filter(([, n]) => n > 0);
     if (spent.length === 0) return null;
@@ -492,7 +578,7 @@ export class GameService {
     if (!attempt || attempt.userId !== userId) throw new ServiceError('not_found', 404);
     if (attempt.status !== 'open') throw new ServiceError('not_open', 409);
     const moves = parseMoves(input);
-    const level = this.levels.get(attempt.levelId)!;
+    const level = levelForAttempt(this.levels.get(attempt.levelId)!, attempt);
     if (!moves || level.timeLimit !== undefined) throw new ServiceError('bad_request', 400);
     let game: Match3Game;
     try {
@@ -502,7 +588,8 @@ export class GameService {
     }
     const bought = moves.filter((m) => 'extraMoves' in m).length;
     if (game.status !== 'lost' || game.movesLeft !== 0 || bought !== attempt.extensions) throw new ServiceError('bad_request', 400);
-    const r = await this.store.extendAttempt(attemptId, userId, (n) => extendPrice(this.economy, n));
+    const economy = (await this.configFor(userId)).economy;
+    const r = await this.store.extendAttempt(attemptId, userId, (n) => extendPrice(economy, n));
     if (r.status === 'not_open') throw new ServiceError('not_open', 409);
     if (r.status === 'no_crystals') throw new ServiceError('no_crystals', 402, { price: r.price });
     await this.track(userId, 'moves_purchased', attempt.levelId, {
@@ -517,7 +604,7 @@ export class GameService {
   async buyItem(userId: number, item: unknown, count: unknown = 1): Promise<WalletView> {
     if (!isItem(item) || !Number.isInteger(count) || (count as number) < 1 || (count as number) > 10) throw new ServiceError('bad_request', 400);
     const n = count as number;
-    const price = this.economy.itemPrices[item] * n;
+    const price = (await this.configFor(userId)).economy.itemPrices[item] * n;
     const w = await this.store.transact(userId, (x) => (x.crystals < price ? null : { crystals: x.crystals - price, items: { [item]: x.items[item] + n } }));
     if (!w) throw new ServiceError('no_crystals', 402, { price });
     await this.track(userId, 'item_bought', null, { item, n, price });
@@ -527,7 +614,7 @@ export class GameService {
   /** Полный запас жизней за кристаллы. */
   async refillLives(userId: number): Promise<{ lives: LivesView; wallet: WalletView }> {
     const now = this.now();
-    const price = this.economy.refillLives;
+    const price = (await this.configFor(userId)).economy.refillLives;
     let full = false;
     const w = await this.store.transact(userId, (x) => {
       if (view(x.lives, now).lives >= MAX_LIVES_VIEW) {
@@ -548,7 +635,8 @@ export class GameService {
   async createInvoice(userId: number, product: unknown): Promise<{ invoiceId: string; product: ProductId; stars: number; title: string; description: string }> {
     const w = await this.store.getWallet(userId);
     const now = this.now();
-    const e = this.economy;
+    const eff = await this.configFor(userId);
+    const e = eff.economy;
     let stars: number;
     let title: string;
     let description: string;
@@ -572,7 +660,7 @@ export class GameService {
     }
     const invoiceId = `inv${this.newId().replace(/-/g, '').slice(0, 24)}`;
     await this.store.createInvoice({ id: invoiceId, userId, product: product as ProductId, stars, createdAt: now });
-    await this.track(userId, 'offer_shown', null, { product, stars });
+    await this.track(userId, 'offer_shown', null, { product, stars, ...expProps(eff) });
     return { invoiceId, product: product as ProductId, stars, title, description };
   }
 
@@ -589,7 +677,8 @@ export class GameService {
     const inv = await this.store.getInvoice(invoiceId);
     if (!inv || inv.userId !== userId || inv.stars !== amount) return 'unknown';
     const now = this.now();
-    const e = this.economy;
+    const eff = await this.configFor(userId);
+    const e = eff.economy;
     const status = await this.store.recordPayment({ chargeId, invoiceId, userId, product: inv.product, stars: amount, now }, (w): WalletUpdate => {
       if (inv.product === 'starter') {
         const items = Object.fromEntries((Object.entries(e.starter.items) as [Item, number][]).map(([i, n]) => [i, w.items[i] + n]));
@@ -601,7 +690,7 @@ export class GameService {
       if (inv.product === 'piggy') return { crystals: w.crystals + w.piggy, piggy: 0 };
       return { crystals: w.crystals + e.packs[inv.product as keyof Economy['packs']].crystals };
     });
-    if (status === 'ok') await this.track(userId, 'offer_purchased', null, { product: inv.product, stars: amount, chargeId });
+    if (status === 'ok') await this.track(userId, 'offer_purchased', null, { product: inv.product, stars: amount, chargeId, ...expProps(eff) });
     return status;
   }
 
@@ -610,8 +699,8 @@ export class GameService {
   }
 
   /** Витрина для клиента: цены бустеров, пакеты, стартовый пак и копилка. */
-  shop() {
-    const e = this.economy;
+  async shop(userId: number) {
+    const e = (await this.configFor(userId)).economy;
     return {
       itemPrices: e.itemPrices, refillLives: e.refillLives, extendPrices: e.extendPrices, extendMoves: e.extendMoves,
       packs: e.packs,
@@ -623,7 +712,8 @@ export class GameService {
   /** Возврат: забрать начисленное (кристаллы не уходят в минус). Сам refundStarPayment делает бот. */
   async refund(chargeId: string): Promise<{ status: 'ok' | 'not_found' | 'already'; userId?: number }> {
     const now = this.now();
-    const e = this.economy;
+    const paid = await this.store.getPayment(chargeId);
+    const e = paid ? (await this.configFor(paid.userId)).economy : this.economy;
     const r = await this.store.refundPayment(chargeId, now, (w, product, granted) => {
       const crystals = Math.max(0, w.crystals - granted);
       if (product !== 'starter') return { crystals };
@@ -667,6 +757,9 @@ export function roomLevelPool(levels: ReadonlyMap<number, LevelDef>, creatorMaxL
 }
 
 const MAX_LIVES_VIEW = 5;
+
+/** Варианты экспериментов в событиях — для разбивки отчёта. */
+const expProps = (eff: Effective) => (Object.keys(eff.variants).length > 0 ? { exp: eff.variants } : {});
 
 /** Бустеры перед уровнем из запроса: только известные, без повторов. */
 function parseStartBoosters(input: readonly unknown[]): Item[] {

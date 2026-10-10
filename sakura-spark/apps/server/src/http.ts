@@ -18,6 +18,9 @@ export interface HttpDeps {
   readonly bot?: { readonly chat: ChatBot; readonly secret: string };
   readonly now?: () => number;
   readonly log?: (msg: string) => void;
+  /** GET /api/admin/report — только для adminIds (вход тем же initData). */
+  readonly adminIds?: readonly number[];
+  readonly report?: () => Promise<unknown>;
 }
 
 const MAX_BODY = 64 * 1024;
@@ -98,7 +101,11 @@ export function createApp(deps: HttpDeps): Server {
       if (!Number.isInteger(levelId)) throw new HttpError(400, 'bad_request');
       return send(res, 200, await deps.service.startAttempt(user.id, levelId as number, Array.isArray(boosters) ? boosters : []));
     }
-    if (method === 'GET' && path === '/api/shop') return send(res, 200, deps.service.shop());
+    if (method === 'GET' && path === '/api/admin/report') {
+      if (!deps.report || !deps.adminIds?.includes(user.id)) throw new HttpError(403, 'forbidden');
+      return send(res, 200, await deps.report());
+    }
+    if (method === 'GET' && path === '/api/shop') return send(res, 200, await deps.service.shop(user.id));
     if (method === 'POST' && path === '/api/shop/buy') {
       const { item, count } = await readJson(req);
       return send(res, 200, { wallet: await deps.service.buyItem(user.id, item, count ?? 1) });

@@ -37,6 +37,8 @@ export interface Me {
   readonly levels: Record<string, { readonly stars: number; readonly bestScore: number }>;
   readonly levelCount: number;
   readonly serverTime: number;
+  /** Ходы и время уровней, сдвинутые remote config на сервере. */
+  readonly levelOverrides?: Record<string, { readonly moves?: number; readonly timeLimit?: number }>;
 }
 
 export interface Attempt {

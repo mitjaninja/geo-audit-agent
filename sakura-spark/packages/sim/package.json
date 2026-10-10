@@ -13,6 +13,7 @@
     "typecheck": "tsc --noEmit -p .",
     "test": "node --import tsx --test test/*.test.ts",
     "autotest": "node --import tsx src/cli.ts",
-    "tune": "node --import tsx src/tune-cli.ts"
+    "tune": "node --import tsx src/tune-cli.ts",
+    "calibrate": "node --import tsx src/calibrate-cli.ts"
   }
 }

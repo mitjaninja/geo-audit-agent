@@ -93,7 +93,7 @@ test('migration: a pre-migration database moves to the latest version and keeps 
     INSERT INTO attempts (id, user_id, level_id, seed, started_at, status) VALUES ('a1', 7, 2, 5, 1, 'won');`);
   old.close();
   const s = new SqliteStore(path);
-  assert.equal(s.schemaVersion, 3);
+  assert.equal(s.schemaVersion, 4);
   return Promise.all([s.getUser(7), s.getAttempt('a1'), s.getWallet(7)]).then(([u, a, w]) => {
     assert.equal(u?.maxLevel, 9);
     assert.equal(u?.lives.lives, 3);
@@ -102,7 +102,7 @@ test('migration: a pre-migration database moves to the latest version and keeps 
     assert.equal(w.crystals, 0);
     assert.deepEqual(Object.values(w.items), [3, 3, 3, 3, 3, 3], 'existing players get the free boosters too');
     s.close();
-    assert.equal(new SqliteStore(path).schemaVersion, 3, 'reopening does not re-run migrations');
+    assert.equal(new SqliteStore(path).schemaVersion, 4, 'reopening does not re-run migrations');
   });
 });
 

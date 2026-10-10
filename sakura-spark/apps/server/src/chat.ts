@@ -1,3 +1,4 @@
+import { ConfigError } from './remote.ts';
 import type { BotApi } from './bot.ts';
 import { BOT_TEXT } from './bot.ts';
 import type { TelegramUser } from './auth.ts';
@@ -24,8 +25,10 @@ export interface ChatBotDeps {
   readonly refreshDelayMs?: number;
   readonly now?: () => number;
   readonly log?: (msg: string) => void;
-  /** Telegram id администраторов: им доступна команда /refund. */
+  /** Telegram id администраторов: им доступны /refund, /config…, /report. */
   readonly adminIds?: readonly number[];
+  /** Сводка для /report (есть только с SQLite-хранилищем). */
+  readonly report?: () => Promise<string>;
 }
 
 interface TgUser { id: number; first_name?: string; username?: string; language_code?: string }
@@ -205,8 +208,60 @@ export class ChatBot {
     await reply(`Возвращено ${pay.stars} ⭐ игроку ${pay.userId}, покупка «${pay.product}» списана`);
   }
 
+  /**
+   * Remote config из чата с ботом (только администраторы):
+   * /config — действующий конфиг и история; /config_set <JSON> — заменить целиком; /config_rollback — откат.
+   */
+  private async onConfig(chatId: number, fromId: number | undefined, cmd: string, arg: string): Promise<void> {
+    if (!fromId || !this.deps.adminIds?.includes(fromId)) return;
+    const reply = (text: string) => this.deps.api.call('sendMessage', { chat_id: chatId, text: text.slice(0, 4000) });
+    const svc = this.deps.service;
+    if (cmd === 'config_set') {
+      if (!arg.trim()) return void (await reply('Использование: /config_set {"economy":{"refillLives":10}}\nПустой конфиг — /config_set {}'));
+      try {
+        const { id, config } = await svc.setConfig(arg, fromId);
+        const exps = (config.experiments ?? []).map((e) => `${e.id}${e.active ? '' : ' (выкл.)'}: ${e.variants.map((v) => `${v.name} ${v.weight}`).join(' / ')}`);
+        await reply(`Конфиг #${id} сохранён и действует сразу.${exps.length ? `\nЭксперименты:\n${exps.join('\n')}` : ''}`);
+      } catch (e) {
+        if (e instanceof ConfigError) return void (await reply(`Не сохранил: ${e.message}`));
+        throw e;
+      }
+      return;
+    }
+    if (cmd === 'config_rollback') {
+      const r = await svc.rollbackConfig(fromId);
+      return void (await reply(r ? `Вернул версию #${r.from}, теперь это #${r.id}` : 'Откатывать некуда: версий меньше двух'));
+    }
+    const history = await svc.configHistory(5);
+    const current = history[0];
+    if (!current) return void (await reply('Конфиг пустой — действуют значения по умолчанию.\nПример: /config_set {"economy":{"refillLives":10}}'));
+    const when = (t: number) => new Date(t).toISOString().slice(0, 16).replace('T', ' ');
+    await reply([
+      `Конфиг #${current.id} от ${when(current.createdAt)} UTC:`,
+      JSON.stringify(JSON.parse(current.json), null, 1),
+      '',
+      `История: ${history.map((h) => `#${h.id} ${when(h.createdAt)}`).join(', ')}`,
+    ].join('\n'));
+  }
+
   private async onMessage(msg: NonNullable<Update['message']>): Promise<void> {
     if (!msg.text || msg.chat.type !== 'private') return;
+    if (/^\/report(?:@\w+)?$/.test(msg.text) && msg.from && this.deps.adminIds?.includes(msg.from.id) && this.deps.report) {
+      const text = await this.deps.report();
+      // сообщение Telegram — до 4096 символов: длинную сводку режем на части по строкам
+      const parts: string[] = [];
+      for (const line of text.split('\n')) {
+        if (parts.length === 0 || parts.at(-1)!.length + line.length + 1 > 3900) parts.push(line);
+        else parts[parts.length - 1] += `\n${line}`;
+      }
+      for (const p of parts) await this.deps.api.call('sendMessage', { chat_id: msg.chat.id, text: p });
+      return;
+    }
+    const conf = /^\/(config|config_set|config_rollback)(?:@\w+)?(?:\s+([\s\S]*))?$/.exec(msg.text);
+    if (conf) return this.onConfig(msg.chat.id, msg.from?.id, conf[1]!, conf[2] ?? '');
+    if (/^\/myid(?:@\w+)?$/.test(msg.text)) {
+      return void (await this.deps.api.call('sendMessage', { chat_id: msg.chat.id, text: `Твой Telegram id: ${msg.from?.id ?? '—'}` }));
+    }
     const cmd = /^\/(paysupport|terms|refund)(?:@\w+)?(?:\s+(\S+))?/.exec(msg.text);
     if (cmd?.[1] === 'refund') return this.onRefund(msg.chat.id, msg.from?.id, cmd[2]);
     if (cmd) return void (await this.deps.api.call('sendMessage', { chat_id: msg.chat.id, text: cmd[1] === 'terms' ? BOT_TEXT.terms : BOT_TEXT.paysupport }));

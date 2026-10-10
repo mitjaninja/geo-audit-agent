@@ -11,6 +11,13 @@ export interface AutotestOptions {
   /** Сиды поля: seedBase, seedBase+1, … — прогоны воспроизводимы. */
   readonly seedBase?: number;
   readonly assist?: number;
+  readonly model?: PlayerModel;
+}
+
+/** Модель живого игрока: доля «умных» ходов казуального бота и темп на уровнях со временем. */
+export interface PlayerModel {
+  readonly skill?: number;
+  readonly secondsPerMove?: number;
 }
 
 export type Verdict = 'ok' | 'too_hard' | 'too_easy';
@@ -58,18 +65,18 @@ export function goalFraction(game: Match3Game): number {
  */
 export const SECONDS_PER_MOVE = 3.6;
 
-export function playOnce(level: LevelDef, seed: number, bot: BotName, assist?: number): Match3Game {
+export function playOnce(level: LevelDef, seed: number, bot: BotName, assist?: number, model: PlayerModel = {}): Match3Game {
   const opts = gameOptionsFromLevel(level, seed);
   const game = new Match3Game(assist ? { ...opts, assist } : opts);
-  const choose = makeBot(bot, seed ^ 0x5eed);
-  const budget = level.timeLimit !== undefined ? Math.round(level.timeLimit / SECONDS_PER_MOVE) : Infinity;
+  const choose = makeBot(bot, seed ^ 0x5eed, model.skill);
+  const budget = level.timeLimit !== undefined ? Math.round(level.timeLimit / (model.secondsPerMove ?? SECONDS_PER_MOVE)) : Infinity;
   while (game.status === 'playing' && game.history.length < budget) game.swap(choose(game));
   if (game.status === 'playing') game.timeUp();
   return game;
 }
 
 export function autotestLevel(level: LevelDef, options: AutotestOptions): LevelReport {
-  const { runs, bot, seedBase = 0, assist } = options;
+  const { runs, bot, seedBase = 0, assist, model } = options;
   if (!Number.isInteger(runs) || runs < 1) throw new RangeError(`runs ${runs}`);
   let wins = 0;
   let movesLeftOnWin = 0;
@@ -77,7 +84,7 @@ export function autotestLevel(level: LevelDef, options: AutotestOptions): LevelR
   const stars: [number, number, number, number] = [0, 0, 0, 0];
   const started = performance.now();
   for (let i = 0; i < runs; i++) {
-    const game = playOnce(level, seedBase + i, bot, assist);
+    const game = playOnce(level, seedBase + i, bot, assist, model);
     stars[game.stars]++;
     if (game.status === 'won') {
       wins++;

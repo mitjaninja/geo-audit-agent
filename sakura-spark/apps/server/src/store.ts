@@ -101,6 +101,27 @@ export interface AttemptRow {
   readonly startBoosters: readonly Item[];
   /** Сколько раз оплачено «+5 ходов». */
   readonly extensions: number;
+  /** Ходы и время уровня, если remote config их сдвинул (null — как в файле уровня). */
+  readonly moves: number | null;
+  readonly timeLimit: number | null;
+}
+
+export interface ConfigRow {
+  readonly id: number;
+  readonly json: string;
+  readonly createdAt: number;
+  readonly authorId: number | null;
+}
+
+/** Итоги игрока для отчёта по экспериментам. */
+export interface UserOutcome {
+  readonly userId: number;
+  readonly createdAt: number;
+  readonly maxLevel: number;
+  readonly wins: number;
+  readonly fails: number;
+  readonly starsPaid: number;
+  readonly returnedD1: boolean;
 }
 
 export interface AttemptClose {
@@ -134,6 +155,12 @@ export interface LevelStats {
   /** Доля поражений при прогрессе целей ≥ 80% — кандидаты на окно «+5 ходов». */
   readonly nearMissRate: number;
   readonly avgMovesLeftOnWin: number;
+  /**
+   * «Чистые» партии — без облегчения, бустеров, докупки ходов и сдвига конфига: их win rate сравним
+   * с казуальным ботом (калибровка CASUAL_SKILL). Брошенные партии сюда не входят.
+   */
+  readonly cleanGames: number;
+  readonly cleanWinRate: number;
 }
 
 export interface Report {
@@ -194,6 +221,10 @@ export interface Store {
   closeAttempt(id: string, userId: number, c: AttemptClose): Promise<boolean>;
   addEvents(events: readonly EventRow[]): Promise<void>;
   getEvents(userId: number): Promise<EventRow[]>;
+  /** Remote config: последняя запись — действующая, остальные — история для отката. */
+  getConfig(): Promise<ConfigRow | null>;
+  saveConfig(json: string, now: number, authorId: number | null): Promise<ConfigRow>;
+  configHistory(limit: number): Promise<ConfigRow[]>;
   close(): void;
 }
 
@@ -302,6 +333,12 @@ const MIGRATIONS: readonly string[] = [
   INSERT INTO inventory (user_id, item, count)
     SELECT u.id, b.item, 3 FROM users u, (SELECT 'beamBomb' AS item UNION ALL SELECT 'rainbow' UNION ALL SELECT 'extraMoves'
       UNION ALL SELECT 'hammer' UNION ALL SELECT 'freeSwap' UNION ALL SELECT 'shuffle') b;`,
+  // v4: remote config с историей; ходы и время попытки, сдвинутые конфигом (реплей должен совпасть)
+  `CREATE TABLE remote_config (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, json TEXT NOT NULL, created_at INTEGER NOT NULL, author_id INTEGER
+  );
+  ALTER TABLE attempts ADD COLUMN moves INTEGER;
+  ALTER TABLE attempts ADD COLUMN time_limit INTEGER;`,
 ];
 
 type Row = Record<string, unknown>;
@@ -339,6 +376,12 @@ const toAttempt = (r: Row): AttemptRow => ({
   roomId: (r.room_id as string | null | undefined) ?? null,
   startBoosters: r.start_boosters ? (JSON.parse(String(r.start_boosters)) as Item[]) : [],
   extensions: Number(r.extensions ?? 0),
+  moves: r.moves === null || r.moves === undefined ? null : Number(r.moves),
+  timeLimit: r.time_limit === null || r.time_limit === undefined ? null : Number(r.time_limit),
+});
+
+const toConfig = (r: Row): ConfigRow => ({
+  id: Number(r.id), json: String(r.json), createdAt: Number(r.created_at), authorId: r.author_id === null ? null : Number(r.author_id),
 });
 
 const toRoom = (r: Row): RoomRow => ({
@@ -437,9 +480,10 @@ export class SqliteStore implements Store {
 
   async createAttempt(a: Omit<AttemptRow, 'status' | 'finishedAt' | 'score' | 'stars'>, lives: LivesState): Promise<void> {
     this.tx(() => {
-      this.db.prepare(`INSERT INTO attempts (id, user_id, level_id, seed, assist, started_at, status, room_id, start_boosters)
-        VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?)`)
-        .run(a.id, a.userId, a.levelId, a.seed, a.assist, a.startedAt, a.roomId, a.startBoosters.length > 0 ? JSON.stringify(a.startBoosters) : null);
+      this.db.prepare(`INSERT INTO attempts (id, user_id, level_id, seed, assist, started_at, status, room_id, start_boosters, moves, time_limit)
+        VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?)`)
+        .run(a.id, a.userId, a.levelId, a.seed, a.assist, a.startedAt, a.roomId,
+          a.startBoosters.length > 0 ? JSON.stringify(a.startBoosters) : null, a.moves, a.timeLimit);
       this.db.prepare('UPDATE users SET lives = ?, lives_updated_at = ?, infinite_until = ? WHERE id = ?')
         .run(lives.lives, lives.updatedAt, lives.infiniteUntil, a.userId);
     });
@@ -664,6 +708,36 @@ export class SqliteStore implements Store {
     }));
   }
 
+  async getConfig(): Promise<ConfigRow | null> {
+    const r = this.db.prepare('SELECT * FROM remote_config ORDER BY id DESC LIMIT 1').get() as Row | undefined;
+    return r ? toConfig(r) : null;
+  }
+
+  async saveConfig(json: string, now: number, authorId: number | null): Promise<ConfigRow> {
+    const res = this.db.prepare('INSERT INTO remote_config (json, created_at, author_id) VALUES (?, ?, ?)').run(json, now, authorId);
+    return { id: Number(res.lastInsertRowid), json, createdAt: now, authorId };
+  }
+
+  async configHistory(limit: number): Promise<ConfigRow[]> {
+    return (this.db.prepare('SELECT * FROM remote_config ORDER BY id DESC LIMIT ?').all(limit) as Row[]).map(toConfig);
+  }
+
+  /** Итоги каждого игрока (для разбивки по вариантам экспериментов). Только SQLite — для скрипта report. */
+  userOutcomes(now: number): UserOutcome[] {
+    const day = 24 * 3600_000;
+    return (this.db.prepare(`
+      SELECT u.id, u.created_at, u.max_level,
+        (SELECT COUNT(*) FROM events e WHERE e.user_id = u.id AND e.name = 'level_win') AS wins,
+        (SELECT COUNT(*) FROM events e WHERE e.user_id = u.id AND e.name = 'level_fail') AS fails,
+        (SELECT COALESCE(SUM(p.stars), 0) FROM payments p WHERE p.user_id = u.id AND p.refunded_at IS NULL) AS stars,
+        (u.created_at <= ? AND EXISTS (SELECT 1 FROM events e WHERE e.user_id = u.id AND e.name = 'session_start'
+          AND e.ts >= u.created_at + ? AND e.ts < u.created_at + ?)) AS d1
+      FROM users u`).all(now - 2 * day, day, 2 * day) as Row[]).map((r) => ({
+      userId: Number(r.id), createdAt: Number(r.created_at), maxLevel: Number(r.max_level),
+      wins: Number(r.wins), fails: Number(r.fails), starsPaid: Number(r.stars), returnedD1: Number(r.d1) === 1,
+    }));
+  }
+
   /** Сводка для продукта: воронка, D1, статистика уровней. Только SQLite — для скрипта report. */
   report(now: number): Report {
     const one = (sql: string, ...args: (number | string)[]) => Number(Object.values(this.db.prepare(sql).get(...args) as Row)[0] ?? 0);
@@ -689,8 +763,18 @@ export class SqliteStore implements Store {
         winRate: wins + fails > 0 ? wins / (wins + fails) : 0,
         nearMissRate: fails > 0 ? Number(r.near) / fails : 0,
         avgMovesLeftOnWin: r.moves_left === null ? 0 : Number(r.moves_left),
+        cleanGames: 0, cleanWinRate: 0,
       };
     });
+    const clean = new Map((this.db.prepare(`
+      SELECT level_id, COUNT(*) AS games, SUM(status = 'won') AS wins FROM attempts
+      WHERE room_id IS NULL AND status IN ('won', 'lost') AND assist = 0 AND start_boosters IS NULL AND extensions = 0
+        AND moves IS NULL AND time_limit IS NULL AND (swaps IS NULL OR swaps NOT LIKE '%"booster"%')
+      GROUP BY level_id`).all() as Row[]).map((r) => [Number(r.level_id), { games: Number(r.games), wins: Number(r.wins) }]));
+    for (const l of levels) {
+      const c = clean.get(l.levelId);
+      Object.assign(l, { cleanGames: c?.games ?? 0, cleanWinRate: c && c.games > 0 ? c.wins / c.games : 0 });
+    }
     return {
       users: one('SELECT COUNT(*) FROM users'),
       funnel: {

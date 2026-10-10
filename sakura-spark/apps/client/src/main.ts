@@ -102,7 +102,9 @@ function showMap(focus?: number): void {
 
 /** Экран старта уровня с бустерами (онлайн); офлайн — сразу в игру. */
 function showStart(levelId: number, room?: { id: string }): void {
-  const level = bundled.get(levelId);
+  const file = bundled.get(levelId);
+  // в комнате уровень как в файле — у всех чата одинаковый; на карте — со сдвигом remote config
+  const level = file && !room ? { ...file, ...levelOverrides[levelId] } : file;
   if (!api || !progress.wallet || !shopView || !level) {
     if (room) return void playRoom(room.id);
     return void play(levelId);
@@ -358,6 +360,9 @@ document.addEventListener('visibilitychange', () => {
   }
 });
 
+/** Сдвиги ходов и времени из remote config — для экрана старта; партию сервер присылает уже сдвинутой. */
+let levelOverrides: Record<string, { moves?: number; timeLimit?: number }> = {};
+
 async function boot(): Promise<void> {
   if (api) {
     try {
@@ -368,6 +373,7 @@ async function boot(): Promise<void> {
       progress.stars = { ...me.levels };
       progress.lives = livesToClient(me.lives);
       progress.wallet = me.wallet;
+      levelOverrides = me.levelOverrides ?? {};
       shopView = await api.shop().catch(() => null);
       track({ name: 'session_start', props: { platform: telegram.inTelegram ? 'telegram' : 'web' } });
     } catch {

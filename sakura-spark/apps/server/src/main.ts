@@ -5,6 +5,7 @@ import { ChatBot } from './chat.ts';
 import { loadConfig } from './config.ts';
 import { createApp } from './http.ts';
 import { loadLevels } from './levels.ts';
+import { buildReport, formatReport } from './report.ts';
 import { GameService } from './service.ts';
 import { SqliteStore } from './store.ts';
 
@@ -13,8 +14,9 @@ if (config.dbPath !== ':memory:') mkdirSync(dirname(config.dbPath), { recursive:
 const store = new SqliteStore(config.dbPath);
 const levels = loadLevels(config.levelsDir);
 let chat: ChatBot | null = null;
-const service = new GameService({ store, levels, onRoomChanged: (id) => chat?.scheduleRefresh(id) });
 const log = (m: string) => console.error(m);
+const service = new GameService({ store, levels, onRoomChanged: (id) => chat?.scheduleRefresh(id), log });
+const report = async () => buildReport(store, await service.remoteConfig(), Date.now());
 const webAppUrl = `${config.publicUrl.replace(/\/$/, '')}/`;
 const botApi = config.botToken ? new BotApi(config.botToken) : null;
 if (botApi && config.webhookSecret) {
@@ -25,6 +27,7 @@ if (botApi && config.webhookSecret) {
   });
   chat = new ChatBot({
     api: botApi, service, webAppUrl, botUsername: me.username, directLinks: me.has_main_web_app === true, log, adminIds: config.adminIds,
+    report: async () => formatReport(await report(), true),
   });
   console.log(`bot: @${me.username}, links ${chat.link('rX').includes('startapp') ? 'startapp (Main Mini App)' : 'via /start (Main Mini App is off)'}`);
 }
@@ -35,6 +38,8 @@ const server = createApp({
   clientDir: config.clientDir,
   ...(chat ? { bot: { chat, secret: config.webhookSecret } } : {}),
   log,
+  adminIds: config.adminIds,
+  report,
 });
 
 server.listen(config.port, () => {
